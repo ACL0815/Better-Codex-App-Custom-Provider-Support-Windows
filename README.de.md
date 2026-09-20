@@ -23,10 +23,11 @@ py -3 .\patch_chatgpt_providers.py --check
 py -3 .\patch_chatgpt_providers.py --dry-run
 ```
 
-Die zweite Prüfung bearbeitet nur temporäre Dateien. Wenn sie erfolgreich ist, erstellt dieser Aufruf die gepatchte Kopie:
+Die zweite Prüfung bearbeitet nur temporäre Dateien. Lege anschließend ein separates Codex-Verzeichnis an und erstelle die gepatchte Kopie mit der Provider-Konfiguration dort:
 
 ```powershell
-py -3 .\patch_chatgpt_providers.py
+New-Item -ItemType Directory -Force "$HOME\.codex-openrouter-test" | Out-Null
+py -3 .\patch_chatgpt_providers.py --config "$HOME\.codex-openrouter-test\desktop-model-providers.json"
 ```
 
 Falls der Python-Launcher fehlt, verwende `python` statt `py -3`. Standardmäßig liegt die Ausgabe unter `%LOCALAPPDATA%\Programs\Codex-Provider-Patch`. Mit `--app` wählst du den Quellordner, mit `--output` das Ausgabeziel. Alle Optionen zeigt `--help`.
@@ -56,7 +57,7 @@ Beim getesteten Owl-Build 26.915 öffnete der Befehl ein reagierendes Fenster; G
 
 ## Provider einrichten
 
-Trage eigene Provider in `%USERPROFILE%\.codex\config.toml` ein. Wenn `CODEX_HOME` gesetzt ist, wird stattdessen dieses Verzeichnis verwendet. Beispiel:
+Trage eigene Provider in `%USERPROFILE%\.codex-openrouter-test\config.toml` ein. Der Paket-Starter setzt `CODEX_HOME` und `CODEX_ELECTRON_USER_DATA_PATH` für dieses isolierte Verzeichnis. Die Test-App führt damit ein eigenes Desktop-Profil mit separatem Verlauf; gegebenenfalls musst du dich dort anmelden. Die normale Konfiguration unter `%USERPROFILE%\.codex` und deren Modellauswahl bleiben unberührt. Beispiel:
 
 ```toml
 [model_providers.openrouter]
@@ -69,14 +70,14 @@ env_key = "OPENROUTER_API_KEY"
 Speichere den API-Schlüssel als einzige Zeile in einer privaten Datei außerhalb dieses Repositorys, beispielsweise `%USERPROFILE%\.codex\secrets\openrouter-api-key.txt`. Erlaube nur deinem Windows-Benutzer Zugriff darauf. Der einfache Paketstart oben übernimmt `OPENROUTER_API_KEY` und `CODEX_HOME` **nicht** aus der Eltern-PowerShell. `Start-Codex-Provider.ps1` liest den Schlüssel **im Paketkontext** und setzt die Umgebung vor dem App-Start:
 
 ```powershell
-.\Start-Codex-Provider.ps1 -KeyFile "$HOME\.codex\secrets\openrouter-api-key.txt" -CodexHome "$HOME\.codex"
+.\Start-Codex-Provider.ps1 -KeyFile "$HOME\.codex\secrets\openrouter-api-key.txt" -CodexHome "$HOME\.codex-openrouter-test"
 ```
 
-Die Pfade sind die Vorgaben des Skripts und können bei Bedarf weggelassen werden. Mit `-CheckOnly` prüfst du die Datei und das registrierte Paket ohne App-Start oder API-Aufruf. Der Schlüssel gehört weder in das Repository noch in `config.toml`, die Menü-Konfiguration oder einen Kommandozeilenparameter.
+Diese Pfade sind die Vorgaben des Starters und können weggelassen werden. Der Schlüssel bleibt im normalen Benutzerprofil, während `CODEX_HOME` und das Desktop-Profil auf das isolierte Testverzeichnis zeigen. Mit `-CheckOnly` prüfst du die Datei und das registrierte Paket ohne App-Start oder API-Aufruf. Der Schlüssel gehört weder in das Repository noch in `config.toml`, die Menü-Konfiguration oder einen Kommandozeilenparameter.
 
-Die Datei `desktop-model-providers.json` im Codex-Verzeichnis steuert die Menüeinträge und ordnet Modell-IDs den Providern zu. Ein eigener Provider muss unter derselben ID in `config.toml` stehen. Eigene Modelle benötigen außerdem passende Metadaten im Modellkatalog. Die vollständigen Beispiele findest du in der [englischen Anleitung](README.md).
+Die Datei `desktop-model-providers.json` im **isolierten** Codex-Verzeichnis steuert die Menüeinträge und ordnet Modell-IDs den Providern zu. Ein eigener Provider muss unter derselben ID in dessen `config.toml` stehen. Eigene Modelle benötigen außerdem passende Metadaten im Modellkatalog. Erstelle diesen aus der aktuellen effektiven Modellliste und setze `model_catalog_json` nur in der isolierten Konfiguration. Ein globaler statischer Katalog kann die normale Modellliste durch einen veralteten Stand ersetzen. Die vollständigen Beispiele findest du in der [englischen Anleitung](README.md).
 
-Die Auswahl gilt beim Start einer Aufgabe. Sie ändert den Provider bestehender Aufgaben nicht. Änderungen an der Menü-Konfiguration erfordern keinen erneuten Patch.
+Die Auswahl gilt beim Start einer Aufgabe. Sie ändert den Provider bestehender Aufgaben nicht. „Automatic“ im Provider-Menü ordnet einem bereits gewählten Modell dessen Provider zu; es entscheidet nicht zwischen Astra und Sol. Änderungen an der Menü-Konfiguration erfordern keinen erneuten Patch.
 
 ## Updates und Rückkehr zur Original-App
 

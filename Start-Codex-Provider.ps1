@@ -1,5 +1,5 @@
 ﻿param(
-    [string]$CodexHome = (Join-Path $env:USERPROFILE '.codex'),
+    [string]$CodexHome = (Join-Path $env:USERPROFILE '.codex-openrouter-test'),
     [string]$KeyFile = (Join-Path $env:USERPROFILE '.codex\secrets\openrouter-api-key.txt'),
     [switch]$CheckOnly,
     [switch]$InPackage
@@ -39,13 +39,16 @@ try {
     }
     $previousKey = $env:OPENROUTER_API_KEY
     $previousHome = $env:CODEX_HOME
+    $previousProfile = $env:CODEX_ELECTRON_USER_DATA_PATH
     try {
         $env:OPENROUTER_API_KEY = $testKey
         $env:CODEX_HOME = $codexTestHome
+        $env:CODEX_ELECTRON_USER_DATA_PATH = Join-Path $codexTestHome 'desktop-profile'
         Start-Process -FilePath $appPath -WorkingDirectory (Split-Path $appPath) -WindowStyle Normal
     } finally {
         $env:OPENROUTER_API_KEY = $previousKey
         $env:CODEX_HOME = $previousHome
+        $env:CODEX_ELECTRON_USER_DATA_PATH = $previousProfile
         $testKey = $null
     }
 } catch {

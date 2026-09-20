@@ -35,10 +35,11 @@ Then validate the full patch in a temporary directory:
 py -3 .\patch_chatgpt_providers.py --dry-run
 ```
 
-If both checks pass, build the copy:
+If both checks pass, create a separate Codex home for the custom-provider test and build the copy:
 
 ```powershell
-py -3 .\patch_chatgpt_providers.py
+New-Item -ItemType Directory -Force "$HOME\.codex-openrouter-test" | Out-Null
+py -3 .\patch_chatgpt_providers.py --config "$HOME\.codex-openrouter-test\desktop-model-providers.json"
 ```
 
 If Python is installed without the `py` launcher, replace `py -3` with `python`. The default output location is `%LOCALAPPDATA%\Programs\Codex-Provider-Patch`; backups are stored under `%LOCALAPPDATA%\Codex Provider Patch Backups`. The command prints the exact paths it used.
@@ -76,7 +77,7 @@ On the tested 26.915 Owl build, this command started a responsive window with GP
 
 ## Configure a custom Codex provider
 
-Codex reads custom providers from `%USERPROFILE%\.codex\config.toml`, or from `%CODEX_HOME%\config.toml` when `CODEX_HOME` is set. Provider IDs such as `openrouter` are also used in the menu configuration below.
+Keep the custom-provider setup in a separate home, for example `%USERPROFILE%\.codex-openrouter-test`. The packaged launcher sets `CODEX_HOME` and `CODEX_ELECTRON_USER_DATA_PATH` for that home; Codex then reads its `config.toml` and keeps a separate desktop profile and history. You may need to sign in within that profile. This leaves the normal `%USERPROFILE%\.codex` model preferences and catalog alone. Provider IDs such as `openrouter` are also used in the menu configuration below.
 
 For example:
 
@@ -91,40 +92,40 @@ env_key = "OPENROUTER_API_KEY"
 For the packaged app, save the API key as the only line of a private file outside this repository, such as `%USERPROFILE%\.codex\secrets\openrouter-api-key.txt`, and keep that file accessible only to your Windows user. The package-start command above does **not** inherit `OPENROUTER_API_KEY` or `CODEX_HOME` set in the parent PowerShell. The `Start-Codex-Provider.ps1` launcher reads the key **inside** the package context and sets the process environment before starting the app:
 
 ```powershell
-.\Start-Codex-Provider.ps1 -KeyFile "$HOME\.codex\secrets\openrouter-api-key.txt" -CodexHome "$HOME\.codex"
+.\Start-Codex-Provider.ps1 -KeyFile "$HOME\.codex\secrets\openrouter-api-key.txt" -CodexHome "$HOME\.codex-openrouter-test"
 ```
 
-These are the launcher's default paths and may be omitted. Add `-CheckOnly` to validate the key file and installed package without launching the app or making an API request. The launcher uses a second process inside the package to set the environment; setting `$env:OPENROUTER_API_KEY` before the basic `Invoke-CommandInDesktopPackage` call is not sufficient.
+These are the launcher's default paths and may be omitted. The key stays under the normal user profile while `CODEX_HOME` and the desktop profile point to the isolated test home. Add `-CheckOnly` to validate the key file and installed package without launching the app or making an API request. The launcher uses a second process inside the package to set the environment; setting `$env:OPENROUTER_API_KEY` before the basic `Invoke-CommandInDesktopPackage` call is not sufficient.
 
 Do not put the key in `config.toml`, `desktop-model-providers.json`, a command-line argument, or a committed file. If you use Codex's `[model_providers.openrouter.auth]` command configuration instead, remove `env_key`; these are alternate authentication methods. See the [Codex configuration reference](https://developers.openai.com/codex/config-advanced#custom-model-providers) for supported provider settings.
 
-Leave the global `model_provider` unset if you want OpenAI and custom providers to coexist in the desktop app. The patch selects a provider when each new task starts.
+Leave `model_provider` unset in the isolated `config.toml` if OpenAI and custom providers should coexist in this app. The patch selects a provider when each new task starts. The provider menu's **Automatic** choice maps an already-selected model to a provider; it does not pick between Astra and Sol models.
 
 ## Make custom models available
 
-Codex must know each model's metadata before it can appear in the model menu. A custom model catalog can be configured with `model_catalog_json`:
+Codex must know each model's metadata before it can appear in the model menu. Create a test catalog from the **current effective** model list, then add your custom model. Keep this override in the isolated home; a global `model_catalog_json` can replace the normal model list with a stale snapshot.
 
 ```powershell
-New-Item -ItemType Directory -Force "$HOME\.codex\model-catalogs" | Out-Null
-$catalog = codex debug models --bundled | Out-String
-[System.IO.File]::WriteAllText("$HOME\.codex\model-catalogs\custom.json", $catalog, (New-Object System.Text.UTF8Encoding($false)))
+New-Item -ItemType Directory -Force "$HOME\.codex-openrouter-test" | Out-Null
+$catalog = codex debug models | Out-String
+[System.IO.File]::WriteAllText("$HOME\.codex-openrouter-test\openrouter-models.json", $catalog, (New-Object System.Text.UTF8Encoding($false)))
 ```
 
-Edit the top-level `models` array in `custom.json`. Copy an existing entry with similar capabilities and update its `slug`, display name, context window, modalities, reasoning levels, and tool support. The `slug` must be the exact model ID understood by the provider. Preserve other required fields and use the model's actual capabilities.
+Edit the top-level `models` array in `openrouter-models.json`. Copy an existing entry with similar capabilities and update its `slug`, display name, context window, modalities, reasoning levels, and tool support. The `slug` must be the exact model ID understood by the provider. Preserve other required fields and use the model's actual capabilities. Rebuild this isolated catalog when the normal app's model list changes.
 
-In `config.toml`, put `model_catalog_json` at the top level, **before any `[section]` headers**. Use an absolute Windows path. TOML literal strings avoid escaping backslashes:
+In the isolated `config.toml`, put `model_catalog_json` at the top level, **before any `[section]` headers**. Use an absolute Windows path. TOML literal strings avoid escaping backslashes:
 
 ```toml
-model_catalog_json = 'C:\Users\YOUR_USERNAME\.codex\model-catalogs\custom.json'
+model_catalog_json = 'C:\Users\YOUR_USERNAME\.codex-openrouter-test\openrouter-models.json'
 ```
 
-Replace `YOUR_USERNAME` with your Windows user directory, or use the equivalent location under `CODEX_HOME`. Restart the app after changing the catalog. `codex debug models` shows the effective model catalog.
+Replace `YOUR_USERNAME` with your Windows user directory. Restart the patched app after changing the catalog. `codex debug models` shows the normal effective catalog; launch that command with the isolated `CODEX_HOME` to inspect the test catalog.
 
 ## Configure the provider menu
 
-The tool creates `desktop-model-providers.json` in the effective Codex home directory. With default settings, the path is `%USERPROFILE%\.codex\desktop-model-providers.json`.
+The tool creates `desktop-model-providers.json` at the path selected by `--config`. In the example above it is `%USERPROFILE%\.codex-openrouter-test\desktop-model-providers.json`.
 
-`--config` changes where the installer writes the JSON, not where the running app reads it. If you prepare a file elsewhere, copy it to the app's effective Codex home before use. Prefer the default location, or set the same `CODEX_HOME` for both the installer and the app.
+`--config` changes where the installer writes the JSON, not where the running app reads it. Keep that file in the same isolated home passed as `-CodexHome` to the launcher.
 
 Example:
 
