@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install the custom model-provider picker patch into ChatGPT.app on macOS.
+"""Build a portable Windows Codex app with the custom provider picker.
 
 The patch is intentionally version-sensitive: it only edits JavaScript bundles
 whose expected source hunks match exactly. App updates that change those bundles
@@ -14,12 +14,11 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import plistlib
-import pwd
+import ctypes
+from ctypes import wintypes
 import re
 import shlex
 import shutil
-import signal
 import struct
 import subprocess
 import sys
@@ -27,6 +26,8 @@ import tempfile
 import textwrap
 import time
 from typing import Any, NoReturn
+
+from patch_windows_26915 import build_windows_26915_variant
 
 
 PATCH_MARKER = b"__codexDesktopModelProvidersPatchV3"
@@ -965,6 +966,7 @@ PICKER_DIFF_LEGACY_V2_TO_V3 = r"""@@ -10242,7 +10242,7 @@
 
 
 PATCH_VARIANTS: tuple[tuple[str, str, str], ...] = (
+    build_windows_26915_variant(CENTRAL_DIFF, PICKER_DIFF),
     ("ChatGPT 26.727 Power Picker", CENTRAL_DIFF_26727, PICKER_DIFF_26727),
     ("ChatGPT 26.721 Power Picker", CENTRAL_DIFF_26721, PICKER_DIFF_26721),
     ("ChatGPT 26.715 legacy picker", CENTRAL_DIFF, PICKER_DIFF),
@@ -1033,7 +1035,7 @@ def terminal_status(
             break_on_hyphens=False,
         ) or [""]
         for index, line in enumerate(detail_lines):
-            marker = "↳ " if index == 0 else "  "
+            marker = "> " if index == 0 else "  "
             print(
                 f"{'':{badge_width}}{color(marker + line, '2', stream=stream)}",
                 file=stream,
@@ -1046,7 +1048,7 @@ def terminal_heading(title: str, code: str = "36") -> None:
     rule_length = max(2, terminal_width() - len(visible_title))
     print()
     print(
-        color(f"{visible_title}{'━' * rule_length}", "1", code),
+        color(f"{visible_title}{'=' * rule_length}", "1", code),
     )
     sys.stdout.flush()
 
@@ -1060,8 +1062,8 @@ def terminal_panel(
 ) -> None:
     width = terminal_width()
     title_text = f" {title.upper()} "
-    top = f"╭─{title_text}{'─' * max(1, width - len(title_text) - 2)}"
-    bottom = f"╰{'─' * (width - 1)}"
+    top = f"+-{title_text}{'-' * max(1, width - len(title_text) - 2)}"
+    bottom = f"+{'-' * (width - 1)}"
     print(file=stream)
     print(color(top, "1", code, stream=stream), file=stream)
     paragraphs = str(message).splitlines() or [""]
@@ -1073,7 +1075,7 @@ def terminal_panel(
             break_on_hyphens=False,
         ) or [""]
         for line in wrapped:
-            border = color("│", code, stream=stream)
+            border = color("|", code, stream=stream)
             print(f"{border} {color(line, '1', stream=stream)}", file=stream)
     print(color(bottom, "1", code, stream=stream), file=stream)
     print(file=stream)
@@ -1081,7 +1083,7 @@ def terminal_panel(
 
 
 def terminal_bullet(label: str, description: str) -> None:
-    bullet = color("◆", "1", "36")
+    bullet = color("*", "1", "36")
     key = color(label, "1", "33")
     prefix_width = 29
     prefix = f"  {bullet} {key}"
@@ -1103,6 +1105,8 @@ def print_completion_summary(
     config: Path,
     *,
     backup: Path | None = None,
+    output: Path | None = None,
+    modified_pe: bool = False,
     already_installed: bool = False,
     upgraded: bool = False,
 ) -> None:
@@ -1156,12 +1160,17 @@ def print_completion_summary(
 
     if backup is not None:
         terminal_heading("Recovery", "34")
-        terminal_status("BACKUP", "Complete original app backup:", "34", detail=backup)
+        terminal_status("BACKUP", "Previous portable copy backup:", "34", detail=backup)
+
+    if output is not None:
+        terminal_status("OUTPUT", "Portable app directory:", "36", detail=output)
 
     terminal_heading("Important", "33")
     terminal_status(
         "NOTICE",
-        "The app now has an ad-hoc signature. A ChatGPT update may replace this patch.",
+        ("The updated EXE has an invalid publisher signature. Windows may warn or block it. "
+         if modified_pe else "The copied app is modified and may trigger Windows warnings. ")
+        + "An MSIX app copied out of WindowsApps may require package identity at runtime.",
         "33",
     )
     print()
@@ -1185,8 +1194,18 @@ def run(
         detail=shlex.join(command),
     )
     try:
+        executable = shutil.which(command[0])
+        if executable is None:
+            raise PatchError(f"Command not found: {command[0]}")
+        actual_command = [executable, *command[1:]]
+        if command[0] == "npx":
+            node = shutil.which("node")
+            npx_cli = Path(executable).parent / "node_modules" / "npm" / "bin" / "npx-cli.js"
+            if node is None or not npx_cli.is_file():
+                raise PatchError("Node.js npm/npx installation not found in the standard layout")
+            actual_command = [node, str(npx_cli), *command[1:]]
         return subprocess.run(
-            command,
+            actual_command,
             cwd=cwd,
             check=True,
             text=True,
@@ -1207,12 +1226,12 @@ class FancyArgumentParser(argparse.ArgumentParser):
         stream = file or sys.stdout
         width = terminal_width()
         title = " COMMAND HELP "
-        top = f"╭─{title}{'─' * max(1, width - len(title) - 2)}"
-        bottom = f"╰{'─' * (width - 1)}"
+        top = f"+-{title}{'-' * max(1, width - len(title) - 2)}"
+        bottom = f"+{'-' * (width - 1)}"
         print(file=stream)
         print(color(top, "1", "36", stream=stream), file=stream)
         for raw_line in message.rstrip().splitlines():
-            border = color("│", "36", stream=stream)
+            border = color("|", "36", stream=stream)
             stripped = raw_line.strip()
             if not stripped:
                 print(border, file=stream)
@@ -1255,13 +1274,7 @@ class FancyArgumentParser(argparse.ArgumentParser):
 
 
 def invoking_user_home() -> Path:
-    sudo_user = os.environ.get("SUDO_USER")
-    if sudo_user and sudo_user != "root":
-        try:
-            return Path(pwd.getpwnam(sudo_user).pw_dir)
-        except KeyError:
-            pass
-    return Path.home()
+    return Path(os.environ["USERPROFILE"]) if os.environ.get("USERPROFILE") else Path.home()
 
 
 def parse_args() -> argparse.Namespace:
@@ -1275,14 +1288,21 @@ def parse_args() -> argparse.Namespace:
     parser = FancyArgumentParser(
         description=(
             "Add a dynamic provider selector and per-model provider routing to the "
-            "macOS ChatGPT/Codex desktop app."
+            "Windows Codex/ChatGPT desktop app. The installed app is never modified."
         )
     )
     parser.add_argument(
         "--app",
         type=Path,
-        default=Path("/Applications/ChatGPT.app"),
-        help="ChatGPT.app to patch (default: /Applications/ChatGPT.app)",
+        default=None,
+        help="Source app directory (default: discover an installed Codex/ChatGPT app)",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=Path(os.environ.get("LOCALAPPDATA", str(home / "AppData" / "Local")))
+        / "Programs" / "Codex-Provider-Patch",
+        help="Writable portable app directory to create",
     )
     parser.add_argument(
         "--config",
@@ -1293,19 +1313,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--backup-dir",
         type=Path,
-        default=home / "Applications" / "ChatGPT Patch Backups",
-        help="Directory in which a complete app backup is created",
+        default=Path(os.environ.get("LOCALAPPDATA", str(home / "AppData" / "Local")))
+        / "Codex Provider Patch Backups",
+        help="Directory for backups of previous portable outputs",
     )
     parser.add_argument(
         "--overwrite-config",
         action="store_true",
         help="Replace the provider-routing JSON with the built-in template",
     )
-    parser.add_argument(
-        "--allow-running",
-        action="store_true",
-        help="Do not close target-app processes before patching (unsafe)",
-    )
+    parser.add_argument("--check", action="store_true", help="Inspect source compatibility without writing files")
+    parser.add_argument("--dry-run", action="store_true", help="Build and verify patch in a temporary directory without installing")
     return parser.parse_args()
 
 
@@ -1384,6 +1402,10 @@ def ensure_provider_config(path: Path, overwrite: bool) -> str:
 
 
 def asar_header_hash(path: Path) -> str:
+    return hashlib.sha256(asar_header_json(path)).hexdigest()
+
+
+def asar_header_json(path: Path) -> bytes:
     try:
         with path.open("rb") as handle:
             size_pickle = handle.read(8)
@@ -1412,7 +1434,55 @@ def asar_header_hash(path: Path) -> str:
         json.loads(header_json.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise PatchError("ASAR header does not contain valid UTF-8 JSON") from exc
-    return hashlib.sha256(header_json).hexdigest()
+    return header_json
+
+
+def asar_unpacked_files(path: Path) -> set[str]:
+    header = json.loads(asar_header_json(path))
+    unpacked: set[str] = set()
+
+    def visit(node: dict[str, Any], prefix: str = "") -> None:
+        for name, child in node.get("files", {}).items():
+            relative = f"{prefix}/{name}" if prefix else name
+            if child.get("unpacked") is True:
+                unpacked.add(relative)
+            if isinstance(child.get("files"), dict):
+                visit(child, relative)
+
+    visit(header)
+    return unpacked
+
+
+def asar_unpack_patterns(path: Path) -> tuple[list[str], list[str]]:
+    header = json.loads(asar_header_json(path))
+    directories: list[str] = []
+    files: list[str] = []
+
+    def visit(node: dict[str, Any], prefix: str = "") -> None:
+        for name, child in node.get("files", {}).items():
+            relative = f"{prefix}/{name}" if prefix else name
+            if child.get("unpacked") is True:
+                (directories if isinstance(child.get("files"), dict) else files).append(relative)
+            elif isinstance(child.get("files"), dict):
+                visit(child, relative)
+
+    visit(header)
+    return directories, files
+
+
+def asar_pack_command(source: Path, target: Path, original: Path) -> list[str]:
+    directories, files = asar_unpack_patterns(original)
+    command = ["npx", "--yes", ASAR_PACKAGE, "pack", str(source), str(target)]
+    if directories:
+        command.extend(("--unpack-dir", directories[0] if len(directories) == 1
+                        else "{" + ",".join(directories) + "}"))
+    if files:
+        # @electron/asar's --unpack matcher tests basenames. Exact ASAR metadata
+        # is verified after packing so an over-broad match is rejected safely.
+        basenames = sorted({Path(file).name for file in files})
+        command.extend(("--unpack", basenames[0] if len(basenames) == 1
+                        else "{" + ",".join(basenames) + "}"))
+    return command
 
 
 def contains_marker(path: Path, marker: bytes = PATCH_MARKER) -> bool:
@@ -1427,139 +1497,183 @@ def contains_marker(path: Path, marker: bytes = PATCH_MARKER) -> bool:
     return False
 
 
-def load_plist(path: Path) -> tuple[dict[str, Any], plistlib.PlistFormat]:
-    raw = path.read_bytes()
-    plist_format = plistlib.FMT_BINARY if raw.startswith(b"bplist00") else plistlib.FMT_XML
+def parse_pe_asar_integrity_payload(payload: bytes) -> list[dict[str, str]]:
+    """Validate Electron's Windows Integrity/ElectronAsar resource."""
     try:
-        data = plistlib.loads(raw)
-    except Exception as exc:
-        raise PatchError(f"Cannot parse {path}: {exc}") from exc
-    if not isinstance(data, dict):
-        raise PatchError(f"Unexpected plist root in {path}")
-    return data, plist_format
+        entries = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise PatchError("Invalid ElectronAsar PE resource JSON") from exc
+    if not isinstance(entries, list):
+        raise PatchError("ElectronAsar PE resource must be a JSON array")
+    for entry in entries:
+        if not isinstance(entry, dict) or not all(
+            isinstance(entry.get(key), str) for key in ("file", "alg", "value")
+        ):
+            raise PatchError("ElectronAsar PE resource has an invalid entry")
+        if entry["alg"].lower() != "sha256" or not re.fullmatch(r"[0-9a-fA-F]{64}", entry["value"]):
+            raise PatchError("ElectronAsar PE resource has an unsupported algorithm or hash")
+    return entries
 
 
-def asar_integrity_hash(plist: dict[str, Any]) -> str:
+def _kernel32() -> Any:
+    if sys.platform != "win32":
+        raise PatchError("Windows PE resources can only be inspected on Windows")
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.LoadLibraryExW.argtypes = [wintypes.LPCWSTR, wintypes.HANDLE, wintypes.DWORD]
+    kernel.LoadLibraryExW.restype = wintypes.HMODULE
+    kernel.FindResourceW.argtypes = [wintypes.HMODULE, wintypes.LPCWSTR, wintypes.LPCWSTR]
+    kernel.FindResourceW.restype = wintypes.HRSRC
+    kernel.SizeofResource.argtypes = [wintypes.HMODULE, wintypes.HRSRC]
+    kernel.SizeofResource.restype = wintypes.DWORD
+    kernel.LoadResource.argtypes = [wintypes.HMODULE, wintypes.HRSRC]
+    kernel.LoadResource.restype = wintypes.HGLOBAL
+    kernel.LockResource.argtypes = [wintypes.HGLOBAL]
+    kernel.LockResource.restype = ctypes.c_void_p
+    kernel.FreeLibrary.argtypes = [wintypes.HMODULE]
+    kernel.EnumResourceLanguagesW.argtypes = [wintypes.HMODULE, wintypes.LPCWSTR,
+                                              wintypes.LPCWSTR, ctypes.c_void_p, ctypes.c_ssize_t]
+    kernel.EnumResourceLanguagesW.restype = wintypes.BOOL
+    kernel.BeginUpdateResourceW.argtypes = [wintypes.LPCWSTR, wintypes.BOOL]
+    kernel.BeginUpdateResourceW.restype = wintypes.HANDLE
+    kernel.UpdateResourceW.argtypes = [wintypes.HANDLE, wintypes.LPCWSTR, wintypes.LPCWSTR,
+                                       wintypes.WORD, ctypes.c_void_p, wintypes.DWORD]
+    kernel.UpdateResourceW.restype = wintypes.BOOL
+    kernel.EndUpdateResourceW.argtypes = [wintypes.HANDLE, wintypes.BOOL]
+    kernel.EndUpdateResourceW.restype = wintypes.BOOL
+    return kernel
+
+
+def pe_asar_resource_language(path: Path) -> int | None:
+    kernel = _kernel32()
+    module = kernel.LoadLibraryExW(str(path), None, 0x2)
+    if not module:
+        raise PatchError(f"Cannot inspect PE resources in {path}: Win32 error {ctypes.get_last_error()}")
     try:
-        value = plist["ElectronAsarIntegrity"]["Resources/app.asar"]["hash"]
-    except (KeyError, TypeError) as exc:
-        raise PatchError("Info.plist has no Electron ASAR integrity entry") from exc
-    if not isinstance(value, str):
-        raise PatchError("Electron ASAR integrity hash is not a string")
-    return value.lower()
+        if not kernel.FindResourceW(module, "ElectronAsar", "Integrity"):
+            error = ctypes.get_last_error()
+            if error in (1813, 1814):
+                return None
+            raise PatchError(f"Cannot find ElectronAsar resource: Win32 error {error}")
+        languages: list[int] = []
+        callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HMODULE,
+                                           wintypes.LPCWSTR, wintypes.LPCWSTR,
+                                           wintypes.WORD, ctypes.c_ssize_t)
+        callback = callback_type(lambda _m, _t, _n, language, _p:
+                                 (languages.append(language) or True))
+        if not kernel.EnumResourceLanguagesW(module, "Integrity", "ElectronAsar", callback, 0):
+            raise PatchError(f"Cannot enumerate ElectronAsar languages: Win32 error {ctypes.get_last_error()}")
+        if len(languages) != 1:
+            raise PatchError(f"Expected exactly one ElectronAsar resource language in {path}")
+        return languages[0]
+    finally:
+        kernel.FreeLibrary(module)
 
 
-def app_path_variants(app: Path) -> set[str]:
-    variants = {str(app), str(app.resolve())}
-    for value in tuple(variants):
-        if value.startswith("/private/tmp/") or value.startswith("/private/var/"):
-            variants.add(value[len("/private") :])
-        elif value.startswith("/tmp/") or value.startswith("/var/"):
-            variants.add(f"/private{value}")
-    return variants
+def read_pe_asar_integrity(path: Path) -> list[dict[str, str]] | None:
+    kernel = _kernel32()
+    module = kernel.LoadLibraryExW(str(path), None, 0x2)  # LOAD_LIBRARY_AS_DATAFILE
+    if not module:
+        raise PatchError(f"Cannot inspect PE resources in {path}: Win32 error {ctypes.get_last_error()}")
+    try:
+        resource = kernel.FindResourceW(module, "ElectronAsar", "Integrity")
+        if not resource:
+            if ctypes.get_last_error() == 1813:  # ERROR_RESOURCE_TYPE_NOT_FOUND
+                return None
+            if ctypes.get_last_error() == 1814:  # ERROR_RESOURCE_NAME_NOT_FOUND
+                return None
+            raise PatchError(f"Cannot read ElectronAsar resource: Win32 error {ctypes.get_last_error()}")
+        size = kernel.SizeofResource(module, resource)
+        data = kernel.LoadResource(module, resource)
+        pointer = kernel.LockResource(data) if data else None
+        if not size or not pointer:
+            raise PatchError(f"Cannot load ElectronAsar resource from {path}")
+        return parse_pe_asar_integrity_payload(ctypes.string_at(pointer, size))
+    finally:
+        kernel.FreeLibrary(module)
+
+
+def write_pe_asar_integrity(path: Path, entries: list[dict[str, str]]) -> None:
+    payload = json.dumps(entries, separators=(",", ":")).encode("utf-8")
+    parse_pe_asar_integrity_payload(payload)
+    language = pe_asar_resource_language(path)
+    if language is None:
+        raise PatchError(f"No existing ElectronAsar resource in {path}")
+    kernel = _kernel32()
+    handle = kernel.BeginUpdateResourceW(str(path), False)
+    if not handle:
+        raise PatchError(f"Cannot update PE resources in {path}: Win32 error {ctypes.get_last_error()}")
+    committed = False
+    try:
+        buffer = ctypes.create_string_buffer(payload)
+        if not kernel.UpdateResourceW(handle, "Integrity", "ElectronAsar", language,
+                                      ctypes.cast(buffer, ctypes.c_void_p), len(payload)):
+            raise PatchError(f"Cannot write ElectronAsar resource: Win32 error {ctypes.get_last_error()}")
+        if not kernel.EndUpdateResourceW(handle, False):
+            raise PatchError(f"Cannot commit PE resource: Win32 error {ctypes.get_last_error()}")
+        committed = True
+    finally:
+        if not committed:
+            kernel.EndUpdateResourceW(handle, True)
+
+
+def app_resources(app: Path) -> Path:
+    resources = app / "resources"
+    if (resources / "app.asar").is_file():
+        return resources
+    raise PatchError(f"No Windows app/resources/app.asar found at {app}")
+
+
+def discover_app() -> Path:
+    local = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local")))
+    candidates = [local / "Programs" / name for name in ("Codex", "ChatGPT")]
+    program_files = [Path(os.environ.get("ProgramFiles", r"C:\Program Files"))]
+    if os.environ.get("ProgramFiles(x86)"):
+        program_files.append(Path(os.environ["ProgramFiles(x86)"]))
+    for base in program_files:
+        candidates.extend(base / name for name in ("Codex", "ChatGPT"))
+    # MSIX packages may be readable, but are never written by this tool.
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "Get-AppxPackage | Where-Object { $_.Name -in @('OpenAI.Codex','OpenAI.ChatGPT-Desktop') } | "
+             "Select-Object Name,InstallLocation | ConvertTo-Json -Compress"],
+            check=True, capture_output=True, text=True,
+        )
+        packages = json.loads(result.stdout or "[]")
+        if isinstance(packages, dict):
+            packages = [packages]
+        packages.sort(key=lambda package: package.get("Name") != "OpenAI.Codex")
+        candidates.extend(Path(package["InstallLocation"]) / "app"
+                          for package in packages if package.get("InstallLocation"))
+    except (OSError, subprocess.CalledProcessError, json.JSONDecodeError):
+        pass
+    for candidate in candidates:
+        try:
+            if (candidate / "resources" / "app.asar").is_file():
+                return candidate.resolve()
+        except PermissionError:
+            continue
+    raise PatchError("No supported Windows Codex/ChatGPT source found; pass --app PATH")
 
 
 def find_target_app_processes(app: Path) -> list[tuple[int, str]]:
-    prefixes = tuple(f"{variant.rstrip('/')}/" for variant in app_path_variants(app))
+    """Find processes launched from an output directory; never terminate them."""
+    if sys.platform != "win32":
+        return []
+    script = "Get-CimInstance Win32_Process | Select-Object ProcessId,ExecutablePath | ConvertTo-Json -Compress"
     try:
-        result = subprocess.run(
-            ["/bin/ps", "-ww", "-axo", "pid=,command="],
-            check=True,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-    except (OSError, subprocess.CalledProcessError) as exc:
-        raise PatchError(f"Could not inspect running processes: {exc}") from exc
-
-    matches: list[tuple[int, str]] = []
-    for line in result.stdout.splitlines():
-        parsed = re.match(r"\s*(\d+)\s+(.+)", line)
-        if parsed is None:
-            continue
-        pid = int(parsed.group(1))
-        command = parsed.group(2)
-        if pid != os.getpid() and command.startswith(prefixes):
-            matches.append((pid, command))
-    return matches
-
-
-def signal_processes(processes: list[tuple[int, str]], signal_number: int) -> None:
-    for pid, _command in processes:
-        try:
-            os.kill(pid, signal_number)
-        except ProcessLookupError:
-            continue
-        except PermissionError as exc:
-            raise PatchError(f"Permission denied while stopping process {pid}") from exc
-
-
-def wait_for_app_processes_to_exit(app: Path, timeout: float) -> list[tuple[int, str]]:
-    deadline = time.monotonic() + timeout
-    remaining = find_target_app_processes(app)
-    while remaining and time.monotonic() < deadline:
-        time.sleep(0.2)
-        remaining = find_target_app_processes(app)
-    return remaining
-
-
-def stop_target_app_processes(app: Path, allow_running: bool) -> None:
-    executable = app / "Contents" / "MacOS" / "ChatGPT"
-    if not executable.is_file():
-        raise PatchError(f"Cannot identify the target ChatGPT app executable: {executable}")
-
-    processes = find_target_app_processes(app)
-    if not processes:
-        terminal_status(
-            "PROCESS",
-            "The target ChatGPT app is not running.",
-            "32",
-            detail=app,
-        )
-        return
-
-    pid_summary = ", ".join(str(pid) for pid, _command in processes)
-    if allow_running:
-        terminal_status(
-            "WARNING",
-            "Target-app processes are running, but automatic closing was disabled.",
-            "33",
-            detail=f"PIDs: {pid_summary}",
-        )
-        return
-
-    terminal_status(
-        "CLOSE",
-        f"Closing {len(processes)} process(es) launched from the target app bundle.",
-        "35",
-        detail=f"PIDs: {pid_summary}",
-    )
-    signal_processes(processes, signal.SIGTERM)
-    remaining = wait_for_app_processes_to_exit(app, 5.0)
-
-    if remaining:
-        remaining_pids = ", ".join(str(pid) for pid, _command in remaining)
-        terminal_status(
-            "FORCE",
-            "Some target-app processes ignored the close request; force-closing them.",
-            "33",
-            detail=f"PIDs: {remaining_pids}",
-        )
-        signal_processes(remaining, signal.SIGKILL)
-        remaining = wait_for_app_processes_to_exit(app, 3.0)
-
-    if remaining:
-        details = "\n".join(f"PID {pid}: {command}" for pid, command in remaining)
-        raise PatchError(
-            "Could not stop every process belonging to the target app bundle.\n\n"
-            f"{details}"
-        )
-
-    terminal_status(
-        "CLOSED",
-        "All processes belonging to the target app bundle have stopped.",
-        "32",
-    )
+        result = subprocess.run(["powershell", "-NoProfile", "-Command", script],
+                                check=True, capture_output=True, text=True)
+        items = json.loads(result.stdout or "[]")
+    except (OSError, subprocess.CalledProcessError, json.JSONDecodeError) as exc:
+        raise PatchError(f"Could not inspect running Windows processes: {exc}") from exc
+    if isinstance(items, dict):
+        items = [items]
+    prefix = str(app.resolve()).rstrip("\\/").casefold() + "\\"
+    return [(int(item["ProcessId"]), item["ExecutablePath"])
+            for item in items if isinstance(item, dict)
+            and isinstance(item.get("ExecutablePath"), str)
+            and item["ExecutablePath"].casefold().startswith(prefix)]
 
 
 def unique_candidate(
@@ -1659,284 +1773,220 @@ def apply_supported_patch_variant(central: Path, picker: Path) -> str:
     return name
 
 
-def make_backup(app: Path, backup_dir: Path, version: str, build: str) -> Path:
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-    safe_version = re.sub(r"[^A-Za-z0-9._-]+", "-", version)
-    safe_build = re.sub(r"[^A-Za-z0-9._-]+", "-", build)
-    backup = backup_dir / (
-        f"ChatGPT-{safe_version}-build-{safe_build}-{timestamp}.app"
-    )
+def integrity_targets(app: Path, asar_path: Path) -> dict[Path, list[dict[str, str]]]:
+    expected = asar_header_hash(asar_path)
+    targets: dict[Path, list[dict[str, str]]] = {}
+    for executable in app.glob("*.exe"):
+        entries = read_pe_asar_integrity(executable)
+        if entries is None:
+            continue
+        matching = [entry for entry in entries if entry["file"].replace("/", "\\").lower() == r"resources\app.asar"]
+        if len(matching) != 1:
+            raise PatchError(f"Expected one app.asar integrity entry in {executable}")
+        if matching[0]["value"].lower() != expected:
+            raise PatchError(f"ASAR header does not match PE integrity metadata in {executable}")
+        targets[executable] = entries
+    return targets
+
+
+def ensure_safe_output(source: Path, output: Path, backup_dir: Path) -> None:
+    source = source.resolve()
+    output = output.resolve()
+    backup_dir = backup_dir.resolve()
+    if source == output or source in output.parents or output in source.parents:
+        raise PatchError("--output must be separate from the installed source app")
+    if backup_dir == source or source in backup_dir.parents or backup_dir in source.parents:
+        raise PatchError("--backup-dir must be separate from the source app")
+    if backup_dir == output or output in backup_dir.parents or backup_dir in output.parents:
+        raise PatchError("--backup-dir must be separate from --output")
+    if "windowsapps" in (part.casefold() for part in output.parts):
+        raise PatchError("--output cannot be inside WindowsApps")
+
+
+def backup_name(output: Path, backup_dir: Path) -> Path:
+    stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    candidate = backup_dir / f"{output.name}-{stamp}"
     suffix = 1
-    while backup.exists():
-        backup = backup_dir / (
-            f"ChatGPT-{safe_version}-build-{safe_build}-{timestamp}-{suffix}.app"
-        )
+    while candidate.exists():
+        candidate = backup_dir / f"{output.name}-{stamp}-{suffix}"
         suffix += 1
-    run(
-        ["/usr/bin/ditto", str(app), str(backup)],
-        label="Creating a complete app backup",
-    )
-    if not (backup / "Contents" / "Resources" / "app.asar").is_file():
-        raise PatchError(f"Backup verification failed: {backup}")
+    return candidate
+
+
+def updated_integrity_entries(entries: list[dict[str, str]], new_hash: str) -> list[dict[str, str]]:
+    updated = [entry.copy() for entry in entries]
+    for entry in updated:
+        if entry["file"].replace("/", "\\").lower() == r"resources\app.asar":
+            entry["value"] = new_hash
+    return updated
+
+
+def verify_patched_pe_resources(targets: dict[Path, list[dict[str, str]]],
+                                patched_asar: Path, directory: Path) -> None:
+    new_hash = asar_header_hash(patched_asar)
+    for executable, entries in targets.items():
+        copy = directory / executable.name
+        shutil.copy2(executable, copy)
+        updated = updated_integrity_entries(entries, new_hash)
+        write_pe_asar_integrity(copy, updated)
+        if read_pe_asar_integrity(copy) != updated:
+            raise PatchError(f"PE integrity update failed for {executable}")
+
+
+def install_portable(source: Path, output: Path, backup_dir: Path,
+                     patched_asar: Path, targets: dict[Path, list[dict[str, str]]]) -> Path | None:
+    ensure_safe_output(source, output, backup_dir)
+    if output.exists() and not (output / "codex-provider-patch.json").is_file():
+        raise PatchError(f"Existing --output is not a copy made by this tool: {output}")
+    running = find_target_app_processes(output) if output.exists() else []
+    if running:
+        pids = ", ".join(str(pid) for pid, _ in running)
+        raise PatchError(f"Portable output is running (PIDs: {pids}); close it and retry")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=f".{output.name}.stage-", dir=output.parent))
+    backup: Path | None = None
+    staged = False
+    try:
+        # copytree into a sibling so no live app file is changed until validation passes
+        shutil.rmtree(staging)
+        shutil.copytree(source, staging, symlinks=False)
+        resources = app_resources(staging)
+        shutil.copy2(patched_asar, resources / "app.asar")
+        patched_unpacked = patched_asar.with_name(patched_asar.name + ".unpacked")
+        if patched_unpacked.exists():
+            old_unpacked = resources / "app.asar.unpacked"
+            if old_unpacked.exists():
+                shutil.rmtree(old_unpacked)
+            shutil.copytree(patched_unpacked, old_unpacked)
+        for executable, entries in targets.items():
+            copied = staging / executable.name
+            updated = updated_integrity_entries(entries, asar_header_hash(patched_asar))
+            write_pe_asar_integrity(copied, updated)
+            verified = read_pe_asar_integrity(copied)
+            if verified != updated:
+                raise PatchError(f"PE integrity update failed for {copied}")
+        if asar_header_hash(resources / "app.asar") != asar_header_hash(patched_asar):
+            raise PatchError("Staged ASAR integrity verification failed")
+        if not contains_marker(resources / "app.asar"):
+            raise PatchError("Staged ASAR has no provider patch marker")
+        (staging / "codex-provider-patch.json").write_text(
+            json.dumps({"format": 1, "source": str(source),
+                        "asar_header_sha256": asar_header_hash(patched_asar)}, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        if output.exists():
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            backup = backup_name(output, backup_dir)
+            output.rename(backup)
+        try:
+            staging.rename(output)
+            staged = True
+        except Exception:
+            if backup is not None and backup.exists():
+                backup.rename(output)
+            raise
+    finally:
+        if not staged and staging.exists():
+            shutil.rmtree(staging)
     return backup
 
 
-def atomic_replace_file(source: Path, target: Path) -> None:
-    original_stat = target.stat()
-    fd, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.patch-", dir=target.parent)
-    os.close(fd)
-    temporary_path = Path(temporary_name)
-    try:
-        shutil.copyfile(source, temporary_path)
-        os.chmod(temporary_path, original_stat.st_mode)
-        if os.geteuid() == 0:
-            os.chown(temporary_path, original_stat.st_uid, original_stat.st_gid)
-        os.replace(temporary_path, target)
-    finally:
-        if temporary_path.exists():
-            temporary_path.unlink()
-
-
-def restore_backup(app: Path, backup: Path) -> Path:
-    timestamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-    failed_copy = app.with_name(f"{app.stem}.patch-failed-{timestamp}.app")
-    suffix = 1
-    while failed_copy.exists():
-        failed_copy = app.with_name(
-            f"{app.stem}.patch-failed-{timestamp}-{suffix}.app"
-        )
-        suffix += 1
-    os.replace(app, failed_copy)
-    try:
-        run(
-            ["/usr/bin/ditto", str(backup), str(app)],
-            label="Restoring the original app from backup",
-        )
-    except Exception:
-        os.replace(failed_copy, app)
-        raise
-    return failed_copy
-
-
-def patch_app(app: Path, config: Path, backup_dir: Path, overwrite_config: bool) -> None:
-    info_path = app / "Contents" / "Info.plist"
-    resources = app / "Contents" / "Resources"
+def patch_app(app: Path, config: Path, backup_dir: Path, overwrite_config: bool,
+              *, output: Path | None = None, check_only: bool = False,
+              dry_run: bool = False) -> None:
+    if sys.platform != "win32":
+        raise PatchError("This installer only supports Windows")
+    app = app.resolve()
+    effective_codex_home = Path(os.environ.get("CODEX_HOME") or (invoking_user_home() / ".codex"))
+    runtime_config = (effective_codex_home / "desktop-model-providers.json").resolve()
+    if not check_only and not dry_run and config != runtime_config:
+        terminal_status("WARNING", "The app reads provider routing from the effective Codex home. "
+                        "This --config path may not be used at runtime.", "33",
+                        detail=f"Runtime path: {runtime_config}")
+    resources = app_resources(app)
     asar_path = resources / "app.asar"
-    unpacked_path = resources / "app.asar.unpacked"
-
-    if sys.platform != "darwin":
-        raise PatchError("This installer only supports macOS")
-    if not app.is_dir() or not info_path.is_file() or not asar_path.is_file():
-        raise PatchError(f"Not a supported ChatGPT app bundle: {app}")
-    if not unpacked_path.is_dir():
-        raise PatchError(f"Missing ASAR companion directory: {unpacked_path}")
     if shutil.which("npx") is None:
-        raise PatchError("npx is required. Install Node.js, then run this installer again")
-
-    config_action = ensure_provider_config(config, overwrite_config)
-    terminal_status(
-        "CONFIG",
-        "Provider-routing config created."
-        if config_action == "written"
-        else "Existing provider-routing config validated.",
-        "36",
-        detail=config,
-    )
-
-    info, plist_format = load_plist(info_path)
-    version = str(info.get("CFBundleShortVersionString", "unknown"))
-    build = str(info.get("CFBundleVersion", "unknown"))
+        raise PatchError("npx is required. Install Node.js and retry")
+    if output is not None:
+        ensure_safe_output(app, output, backup_dir)
+    targets = integrity_targets(app, asar_path)
+    if targets:
+        terminal_status("VERIFY", "Original Windows PE ASAR integrity is valid.", "32",
+                        detail=", ".join(path.name for path in targets))
+    else:
+        terminal_status("NOTICE", "No ElectronAsar PE resource exists in this build.", "33")
     if contains_marker(asar_path):
-        terminal_status(
-            "APP",
-            f"Detected ChatGPT {version}, build {build}.",
-            "34",
-            detail=app,
-        )
-        print_completion_summary(config, already_installed=True)
-        return
-
+        raise PatchError("Source app is already patched; use a clean installed app as --app")
     is_upgrade = contains_marker(asar_path, LEGACY_PATCH_MARKER)
-    if is_upgrade:
-        terminal_status(
-            "UPGRADE",
-            "An earlier provider-picker patch was detected and will be upgraded.",
-            "35",
-            detail=f"ChatGPT {version}, build {build}",
-        )
-
-    current_header_hash = asar_header_hash(asar_path)
-    expected_header_hash = asar_integrity_hash(info)
-    if current_header_hash != expected_header_hash:
-        raise PatchError(
-            "The ASAR header does not match the current app's Info.plist integrity "
-            "metadata. The bundle may be incomplete or modified."
-        )
-    terminal_status(
-        "VERIFY",
-        "The original app's ASAR header integrity is valid.",
-        "32",
-        detail=current_header_hash,
-    )
-
-    terminal_heading("Installation", "35")
-    terminal_status(
-        "APP",
-        f"Preparing ChatGPT {version}, build {build}.",
-        "34",
-        detail=app,
-    )
-    with tempfile.TemporaryDirectory(prefix="chatgpt-provider-patch-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="codex-provider-patch-") as temporary:
         work = Path(temporary)
         extracted = work / "app"
         patched_asar = work / "app.asar"
-        patched_plist = work / "Info.plist"
-
-        run(
-            ["npx", "--yes", ASAR_PACKAGE, "extract", str(asar_path), str(extracted)],
-            label="Extracting application resources",
-        )
+        run(["npx", "--yes", ASAR_PACKAGE, "extract", str(asar_path), str(extracted)],
+            label="Extracting application resources")
         assets = extracted / "webview" / "assets"
         if not assets.is_dir():
             raise PatchError("Extracted app has no webview/assets directory")
-
-        central = unique_candidate(
-            assets,
-            ("async prewarmThreadStart(", "async sendConfigReadRequest("),
-            "App Server client",
-        )
-        picker = unique_candidate(
-            assets,
-            ("composer.intelligenceDropdown.tooltip", "modelOptionsDisabled"),
-            "model picker",
-        )
-
+        central = unique_candidate(assets, ("async prewarmThreadStart(", "async sendConfigReadRequest("),
+                                   "App Server client")
+        picker = unique_candidate(assets, ("composer.intelligenceDropdown.tooltip", "modelOptionsDisabled"),
+                                  "model picker")
         patch_targets = list(dict.fromkeys((central, picker)))
-
-        run(
-            [
-                "npx",
-                "--yes",
-                PRETTIER_PACKAGE,
-                "--write",
-                *(str(path) for path in patch_targets),
-            ],
-            label="Preparing the JavaScript bundles",
-        )
-        patch_layout = apply_supported_patch_variant(central, picker)
-        terminal_status(
-            "LAYOUT",
-            "Matched a supported application bundle layout.",
-            "32",
-            detail=patch_layout,
-        )
-
+        run(["npx", "--yes", PRETTIER_PACKAGE, "--write", *(str(path) for path in patch_targets)],
+            label="Preparing JavaScript bundles")
+        layout = apply_supported_patch_variant(central, picker)
+        terminal_status("LAYOUT", "Matched a supported application bundle.", "32", detail=layout)
         if PATCH_MARKER.decode() not in central.read_text(encoding="utf-8"):
             raise PatchError("Routing marker missing after patch")
         if "CodexCustomProviderPickerSection" not in picker.read_text(encoding="utf-8"):
             raise PatchError("Provider picker missing after patch")
-
-        run(
-            [
-                "npx",
-                "--yes",
-                PRETTIER_PACKAGE,
-                "--write",
-                *(str(path) for path in patch_targets),
-            ],
-            label="Formatting and validating the patched JavaScript",
-        )
-        run(
-            ["npx", "--yes", ASAR_PACKAGE, "pack", str(extracted), str(patched_asar)],
-            label="Packing patched application resources",
-        )
-
-        if not contains_marker(patched_asar):
-            raise PatchError("Packed ASAR does not contain the patch marker")
-        if contains_marker(patched_asar, LEGACY_PATCH_MARKER):
-            raise PatchError("Packed ASAR still contains the legacy patch marker")
-        patched_header_hash = asar_header_hash(patched_asar)
-        info["ElectronAsarIntegrity"]["Resources/app.asar"]["hash"] = patched_header_hash
-        with patched_plist.open("wb") as handle:
-            plistlib.dump(info, handle, fmt=plist_format, sort_keys=False)
-
-        backup = make_backup(app, backup_dir, version, build)
-        terminal_status("OK", "App backup created.", "32", detail=backup)
-
-        live_mutation_started = False
+        if check_only:
+            terminal_status("CHECK", "Source is compatible; source, output and config were not changed.", "32")
+            return
+        run(["npx", "--yes", PRETTIER_PACKAGE, "--write", *(str(path) for path in patch_targets)],
+            label="Validating patched JavaScript")
+        run(asar_pack_command(extracted, patched_asar, asar_path),
+            label="Packing patched application resources")
+        if not contains_marker(patched_asar) or contains_marker(patched_asar, LEGACY_PATCH_MARKER):
+            raise PatchError("Packed ASAR patch markers are invalid")
+        original_unpacked = asar_unpacked_files(asar_path)
+        packed_unpacked = asar_unpacked_files(patched_asar)
+        if original_unpacked != packed_unpacked:
+            raise PatchError(f"Packed ASAR unpacked-file layout changed ({len(original_unpacked)} original, "
+                             f"{len(packed_unpacked)} patched); refusing to install")
+        verify_patched_pe_resources(targets, patched_asar, work)
+        if dry_run:
+            terminal_status("DRY RUN", "Patch packed and verified; no app or config files were changed.", "32")
+            return
+        if output is None:
+            raise PatchError("An output path is required for installation")
+        previous_config = config.read_bytes() if config.exists() else None
+        config_changed = False
         try:
-            live_mutation_started = True
-            atomic_replace_file(patched_asar, asar_path)
-            atomic_replace_file(patched_plist, info_path)
-            run(
-                ["/usr/bin/codesign", "--deep", "--force", "--sign", "-", str(app)],
-                label="Applying the ad-hoc app signature",
-            )
-            run(
-                [
-                    "/usr/bin/codesign",
-                    "--verify",
-                    "--deep",
-                    "--strict",
-                    "--verbose=2",
-                    str(app),
-                ],
-                label="Verifying the app signature",
-            )
-
-            final_info, _ = load_plist(info_path)
-            if asar_header_hash(asar_path) != asar_integrity_hash(final_info):
-                raise PatchError("Installed ASAR integrity verification failed")
-            if not contains_marker(asar_path):
-                raise PatchError("Installed ASAR is missing the patch marker")
-            if contains_marker(asar_path, LEGACY_PATCH_MARKER):
-                raise PatchError("Installed ASAR still contains the legacy patch marker")
-        except Exception as exc:
-            if live_mutation_started:
-                terminal_status(
-                    "RECOVERY",
-                    "Installation failed after app files changed. Restoring the backup.",
-                    "33",
-                    stream=sys.stderr,
-                )
-                try:
-                    failed_copy = restore_backup(app, backup)
-                    terminal_status(
-                        "RESTORED",
-                        "The original app was restored. The failed patched copy was retained.",
-                        "32",
-                        detail=failed_copy,
-                        stream=sys.stderr,
-                    )
-                except Exception as restore_exc:
-                    terminal_panel(
-                        "Recovery failed",
-                        f"Automatic restoration failed: {restore_exc}\n"
-                        f"The full backup remains at: {backup}",
-                        "31",
-                        stream=sys.stderr,
-                    )
-            raise exc
-
-    print_completion_summary(config, backup=backup, upgraded=is_upgrade)
+            config_changed = ensure_provider_config(config, overwrite_config) == "written"
+            backup = install_portable(app, output, backup_dir, patched_asar, targets)
+        except Exception:
+            if config_changed:
+                if previous_config is None:
+                    config.unlink(missing_ok=True)
+                else:
+                    config.write_bytes(previous_config)
+            raise
+    print_completion_summary(config, backup=backup, output=output,
+                             upgraded=is_upgrade, modified_pe=bool(targets))
 
 
 def main() -> int:
     args = parse_args()
     try:
-        app = args.app.expanduser().resolve()
-        stop_target_app_processes(app, args.allow_running)
-        patch_app(
-            app,
-            args.config.expanduser().resolve(),
-            args.backup_dir.expanduser().resolve(),
-            args.overwrite_config,
-        )
-    except PatchError as exc:
+        if args.check and args.dry_run:
+            raise PatchError("Choose either --check or --dry-run")
+        app = (args.app.expanduser().resolve() if args.app else discover_app())
+        patch_app(app, args.config.expanduser().resolve(), args.backup_dir.expanduser().resolve(),
+                  args.overwrite_config, output=args.output.expanduser().resolve(),
+                  check_only=args.check, dry_run=args.dry_run)
+    except (PatchError, PermissionError, OSError) as exc:
         fail(str(exc))
-    except PermissionError as exc:
-        fail(f"Permission denied: {exc}")
     except KeyboardInterrupt:
         fail("Interrupted", 130)
     return 0
