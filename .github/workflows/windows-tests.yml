@@ -20,3 +20,13 @@ jobs:
           node-version: '22'
       - name: Run offline regression tests
         run: python -m unittest discover -s tests -v
+      - name: Validate PowerShell helpers syntax
+        shell: powershell
+        run: |
+          $tokens = $null
+          $errors = $null
+          foreach ($script in @('Register-Codex-PatchIdentity.ps1','Start-Codex-Provider.ps1')) {
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Join-Path $PWD $script), [ref]$tokens, [ref]$errors)
+            if ($errors.Count) { throw ($errors | Out-String) }
+          }

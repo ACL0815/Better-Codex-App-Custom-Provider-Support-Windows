@@ -1164,6 +1164,13 @@ def print_completion_summary(
 
     if output is not None:
         terminal_status("OUTPUT", "Portable app directory:", "36", detail=output)
+        if (output / "resources" / "owl-app.ini").exists():
+            terminal_status(
+                "IDENTITY",
+                "This Owl build requires a Windows package identity before it can start.",
+                "33",
+                detail="Run Register-Codex-PatchIdentity.ps1 for this copy; see README.md.",
+            )
 
     terminal_heading("Important", "33")
     terminal_status(
