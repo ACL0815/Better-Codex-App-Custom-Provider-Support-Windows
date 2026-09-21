@@ -8,6 +8,24 @@ The installer requires every old block to match exactly once before writing.
 from __future__ import annotations
 
 
+WINDOWS_26915_LAYOUT_NAME = "Windows Codex 26.915.4065.0 Power Picker"
+MODEL_CATALOG_ENV = "CODEX_CUSTOM_PROVIDER_MODEL_CATALOG"
+APP_SERVER_ENV_MAPPINGS_ANCHOR = (
+    "QZ=[{configKey:`chatgpt_base_url`,envVar:`CODEX_APP_SERVER_CHATGPT_BASE_URL`},"
+    "{configKey:`openai_base_url`,envVar:`CODEX_APP_SERVER_OPENAI_BASE_URL`}]"
+)
+
+
+def apply_process_model_catalog_override(source: str) -> str:
+    """Pass an optional per-process catalog to the bundled app server."""
+    old = APP_SERVER_ENV_MAPPINGS_ANCHOR
+    new = old[:-1] + (
+        ",{configKey:`model_catalog_json`,envVar:"
+        f"`{MODEL_CATALOG_ENV}`}}]"
+    )
+    return _replace_once(source, old, new)
+
+
 def _replace_once(source: str, old: str, new: str) -> str:
     count = source.count(old)
     if count != 1:
@@ -189,4 +207,4 @@ function i3() {
             (react_before, react_after),
         )
     )
-    return ("Windows Codex 26.915.4065.0 Power Picker", central_diff, picker_diff)
+    return (WINDOWS_26915_LAYOUT_NAME, central_diff, picker_diff)

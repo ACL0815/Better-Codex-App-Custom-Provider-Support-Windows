@@ -12,6 +12,10 @@ import unittest
 from unittest.mock import patch as mock_patch
 
 import patch_chatgpt_providers as patch
+from patch_windows_26915 import (
+    APP_SERVER_ENV_MAPPINGS_ANCHOR,
+    WINDOWS_26915_LAYOUT_NAME,
+)
 
 
 def original_for_diff(diff: str) -> str:
@@ -37,7 +41,10 @@ class PatchSafetyTests(unittest.TestCase):
                 with tempfile.TemporaryDirectory() as temporary:
                     central = Path(temporary, "central.js")
                     picker = Path(temporary, "picker.js")
-                    central.write_text(original_for_diff(central_diff), encoding="utf-8")
+                    central_fixture = original_for_diff(central_diff)
+                    if name == WINDOWS_26915_LAYOUT_NAME:
+                        central_fixture += APP_SERVER_ENV_MAPPINGS_ANCHOR + "\n"
+                    central.write_text(central_fixture, encoding="utf-8")
                     picker.write_text(original_for_diff(picker_diff), encoding="utf-8")
                     self.assertEqual(patch.apply_supported_patch_variant(central, picker), name)
                     self.assertIn(patch.PATCH_MARKER.decode(), central.read_text(encoding="utf-8"))

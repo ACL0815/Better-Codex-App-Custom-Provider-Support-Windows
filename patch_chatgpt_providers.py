@@ -27,7 +27,11 @@ import textwrap
 import time
 from typing import Any, NoReturn
 
-from patch_windows_26915 import build_windows_26915_variant
+from patch_windows_26915 import (
+    WINDOWS_26915_LAYOUT_NAME,
+    apply_process_model_catalog_override,
+    build_windows_26915_variant,
+)
 
 
 PATCH_MARKER = b"__codexDesktopModelProvidersPatchV3"
@@ -1943,6 +1947,25 @@ def patch_app(app: Path, config: Path, backup_dir: Path, overwrite_config: bool,
             label="Preparing JavaScript bundles")
         layout = apply_supported_patch_variant(central, picker)
         terminal_status("LAYOUT", "Matched a supported application bundle.", "32", detail=layout)
+        if layout == WINDOWS_26915_LAYOUT_NAME:
+            main_assets = extracted / ".vite" / "build"
+            if not main_assets.is_dir():
+                raise PatchError("Extracted app has no .vite/build directory")
+            app_server_bundle = unique_candidate(
+                main_assets,
+                ("CODEX_APP_SERVER_CHATGPT_BASE_URL", "CODEX_APP_SERVER_OPENAI_BASE_URL"),
+                "App Server launcher",
+            )
+            try:
+                app_server_bundle.write_text(
+                    apply_process_model_catalog_override(
+                        app_server_bundle.read_text(encoding="utf-8")
+                    ),
+                    encoding="utf-8",
+                )
+            except RuntimeError as exc:
+                raise PatchError(str(exc)) from exc
+            patch_targets.append(app_server_bundle)
         if PATCH_MARKER.decode() not in central.read_text(encoding="utf-8"):
             raise PatchError("Routing marker missing after patch")
         if "CodexCustomProviderPickerSection" not in picker.read_text(encoding="utf-8"):

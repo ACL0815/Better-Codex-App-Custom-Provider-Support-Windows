@@ -5,10 +5,36 @@ import subprocess
 import unittest
 
 import patch_chatgpt_providers as patch
-from patch_windows_26915 import build_windows_26915_variant
+from patch_windows_26915 import (
+    MODEL_CATALOG_ENV,
+    apply_process_model_catalog_override,
+    build_windows_26915_variant,
+)
 
 
 class CurrentWindowsRoutingTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("node"), "Node.js is required for JavaScript behavior checks")
+    def test_optional_process_catalog_becomes_app_server_config_override(self):
+        source = r"""
+var ZZ=[`-c`,`features.code_mode_host=true`],QZ=[{configKey:`chatgpt_base_url`,envVar:`CODEX_APP_SERVER_CHATGPT_BASE_URL`},{configKey:`openai_base_url`,envVar:`CODEX_APP_SERVER_OPENAI_BASE_URL`}];
+function EQ(){let e=QZ.flatMap(({configKey:e,envVar:t})=>{let n=process.env[t]?.trim();return n==null||n===``?[]:[`-c`,`${e}=${JSON.stringify(n)}`]});return e.length===0?[...ZZ,`app-server`,`--analytics-default-enabled`]:[`app-server`,...ZZ,...e,`--analytics-default-enabled`]}
+"""
+        generated = apply_process_model_catalog_override(source)
+        harness = generated + rf"""
+const assert = require('node:assert/strict');
+delete process.env.{MODEL_CATALOG_ENV};
+assert.deepEqual(EQ(), ['-c','features.code_mode_host=true','app-server','--analytics-default-enabled']);
+process.env.{MODEL_CATALOG_ENV} = '  C:\\Catalogs\\openrouter models.json  ';
+assert.deepEqual(EQ(), ['app-server','-c','features.code_mode_host=true','-c','model_catalog_json="C:\\\\Catalogs\\\\openrouter models.json"','--analytics-default-enabled']);
+process.env.{MODEL_CATALOG_ENV} = '   ';
+assert.deepEqual(EQ(), ['-c','features.code_mode_host=true','app-server','--analytics-default-enabled']);
+"""
+        result = subprocess.run(
+            [shutil.which("node"), "-"], input=harness, text=True,
+            capture_output=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     @unittest.skipUnless(shutil.which("node"), "Node.js is required for JavaScript behavior checks")
     def test_generated_routing_handles_local_and_remote_requests(self):
         _, central, _ = build_windows_26915_variant(patch.CENTRAL_DIFF, patch.PICKER_DIFF)
