@@ -108,7 +108,7 @@ $supplement = [ordered]@{ models = @($template) } | ConvertTo-Json -Depth 100
 
 Edit the copied entry in the top-level `models` array. Update its `slug`, display name, context window, modalities, reasoning levels, and tool support. The `slug` must be the exact model ID understood by the provider. Preserve other required fields and use the model's actual capabilities. Supplemental slugs must be unique. If a slug later becomes part of the normal catalog, the current normal metadata wins automatically.
 
-The launcher fails closed when `models_cache.json` is missing, invalid, or belongs to another bundled Codex CLI version. In that case, start the official app normally until it loads the current model list, close it completely, and retry. The launcher never runs `codex debug models` or refreshes authentication state itself.
+The launcher fails closed when `models_cache.json` is missing, invalid, older than the bundled CLI patch version, or belongs to another CLI major/minor line. A newer patch-level cache from the same CLI line is accepted. If validation fails, start the official app normally until it loads the current model list, close it completely, and retry. The launcher never runs `codex debug models` or refreshes authentication state itself.
 
 Do not reference this file from the shared `config.toml`. Pass another path with the launcher's `-CatalogFile` option when needed.
 

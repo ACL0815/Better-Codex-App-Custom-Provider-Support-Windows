@@ -36,7 +36,13 @@ def ps_literal(value: Path | str) -> str:
 
 
 class LauncherFixture:
-    def __init__(self, root: Path) -> None:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        source_version: str = "0.159.2",
+        cache_version: str = "0.159.2",
+    ) -> None:
         self.root = root
         self.install = root / "installed"
         self.source = self.install / "app"
@@ -61,7 +67,7 @@ class LauncherFixture:
             {"slug": "gpt-6.1-sol"},
         ]
         (self.home / "models_cache.json").write_text(
-            json.dumps({"client_version": "fixture-cli", "models": base_models}), encoding="utf-8"
+            json.dumps({"client_version": cache_version, "models": base_models}), encoding="utf-8"
         )
         self.catalog.write_text(
             json.dumps({"models": [
@@ -77,7 +83,7 @@ class LauncherFixture:
             "patch_marker": PATCH_MARKER.decode(),
             "source": str(self.source),
             "source_package_full_name": "OpenAI.Codex_fixture",
-            "source_codex_cli_version": "fixture-cli",
+            "source_codex_cli_version": source_version,
             "source_executable": "ChatGPT.exe",
             "executable": "ChatGPT.exe",
             "source_executable_sha256": hashlib.sha256((self.source / "ChatGPT.exe").read_bytes()).hexdigest(),
@@ -127,6 +133,30 @@ class WindowsLauncherTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("Basis: 4; benutzerdefiniert: 1", result.stdout)
             self.assertIn("Codex laeuft derzeit mit 1 Prozess", result.stdout)
+            self.assertEqual(fixture.snapshot(), before)
+            self.assertFalse(fixture.runtime.exists())
+
+    def test_check_only_accepts_newer_cache_patch_version_without_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = LauncherFixture(
+                Path(temporary), source_version="0.159.2", cache_version="0.159.3"
+            )
+            before = fixture.snapshot()
+            result = fixture.run(check_only=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("Basis: 4; benutzerdefiniert: 1", result.stdout)
+            self.assertEqual(fixture.snapshot(), before)
+            self.assertFalse(fixture.runtime.exists())
+
+    def test_check_only_rejects_different_cache_minor_without_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = LauncherFixture(
+                Path(temporary), source_version="0.159.2", cache_version="0.160.0"
+            )
+            before = fixture.snapshot()
+            result = fixture.run(check_only=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Modellcache passt nicht", result.stderr)
             self.assertEqual(fixture.snapshot(), before)
             self.assertFalse(fixture.runtime.exists())
 

@@ -149,7 +149,14 @@ try {
     if ($sharedConfig -match '(?m)^\s*model_catalog_json\s*=') { throw 'Die gemeinsame config.toml enthaelt model_catalog_json. Entferne diesen globalen Testkatalog zuerst, damit normale Codex-Starts weiter den aktuellen Standardkatalog verwenden.' }
     $baseCatalogPath = Join-Path $sharedCodexHome 'models_cache.json'
     $baseCatalog = Read-JsonFile $baseCatalogPath 'Der aktuelle Codex-Modellcache'
-    if ([string]::IsNullOrWhiteSpace([string]$patchManifest.source_codex_cli_version) -or [string]$baseCatalog.client_version -cne [string]$patchManifest.source_codex_cli_version) {
+    $sourceCliVersion = [regex]::Match([string]$patchManifest.source_codex_cli_version, '^(\d+)\.(\d+)\.(\d+)$')
+    $cacheCliVersion = [regex]::Match([string]$baseCatalog.client_version, '^(\d+)\.(\d+)\.(\d+)$')
+    if (-not $sourceCliVersion.Success -or -not $cacheCliVersion.Success) {
+        throw 'Die CLI-Version im Patch-Manifest oder Modellcache ist ungueltig. Bitte den Windows-Patcher erneut ausfuehren und den normalen Codex-Modellkatalog neu laden.'
+    }
+    if ([uint64]$sourceCliVersion.Groups[1].Value -ne [uint64]$cacheCliVersion.Groups[1].Value -or
+        [uint64]$sourceCliVersion.Groups[2].Value -ne [uint64]$cacheCliVersion.Groups[2].Value -or
+        [uint64]$cacheCliVersion.Groups[3].Value -lt [uint64]$sourceCliVersion.Groups[3].Value) {
         throw 'Der Modellcache passt nicht zur installierten Codex-Version. Starte Codex zuerst normal, bis der aktuelle Modellkatalog geladen wurde, beende die App und versuche es erneut.'
     }
     $supplementalCatalog = Read-JsonFile $catalogPath 'Der ergaenzende Modellkatalog'

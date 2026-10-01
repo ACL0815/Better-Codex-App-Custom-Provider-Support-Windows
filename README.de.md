@@ -97,7 +97,7 @@ Passe den kopierten Eintrag im obersten `models`-Array an: `slug`, Anzeigename, 
 
 Verweise aus der gemeinsamen `config.toml` **nicht** auf diese Datei. Der Starter liest bei jedem Start den kontobezogenen `%USERPROFILE%\.codex\models_cache.json`, behält dessen aktuelle Metadaten und ergänzt ausschließlich dort noch nicht vorhandene Slugs. Gleiche Slugs verwenden stets die normalen Metadaten. Den daraus abgeleiteten Laufzeitkatalog schreibt er erst beim tatsächlichen Start atomisch in die eigene Datei unter `%LOCALAPPDATA%\Codex Provider Patch`; `-CheckOnly` verändert keine Datei.
 
-Fehlt `models_cache.json`, ist die Datei ungültig oder passt ihre CLI-Version nicht zur gepatchten App, bricht der Starter ab. Starte dann die offizielle App normal, bis sie den aktuellen Modellkatalog geladen hat, beende sie vollständig und versuche es erneut. Der Starter führt selbst weder `codex debug models` noch eine Aktualisierung von Anmeldung oder Cache aus.
+Fehlt `models_cache.json`, ist die Datei ungültig, älter als die Patch-Version der mitgelieferten CLI oder stammt sie aus einer anderen CLI-Major/Minor-Linie, bricht der Starter ab. Einen neueren Patch-Level derselben CLI-Linie akzeptiert er. Starte bei einem Fehler die offizielle App normal, bis sie den aktuellen Modellkatalog geladen hat, beende sie vollständig und versuche es erneut. Der Starter führt selbst weder `codex debug models` noch eine Aktualisierung von Anmeldung oder Cache aus.
 
 `%USERPROFILE%\.codex\desktop-model-providers.json` steuert die Provider-Menüeinträge und ordnet Modell-IDs den Providern zu. „Automatic“ ordnet einem bereits gewählten Modell den Provider zu; es entscheidet nicht zwischen Astra und Sol. Änderungen an dieser JSON-Datei erfordern keinen erneuten Patch.
 
