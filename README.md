@@ -62,7 +62,7 @@ Close the official app completely, then run:
 .\Start-Codex-Provider.ps1
 ```
 
-The launcher never terminates app processes itself. It refuses to start while the official app, an older locally packaged copy, or another portable copy is running. It validates the installed `OpenAI.Codex` package, the external patched copy and its source metadata, the shared Codex configuration, model catalog, and key file.
+The launcher never terminates app processes itself. It refuses to start while the official app, an older locally packaged copy, or the selected portable copy is running. Before reading the API key, it validates the installed `OpenAI.Codex` package, the portable executable and ASAR hashes, the patch marker, source metadata, shared configuration, and model catalogs. `-CheckOnly` performs these checks and the catalog merge in memory without writing a runtime catalog.
 
 The outer launcher enters the original package context with `Invoke-CommandInDesktopPackage`. A second PowerShell process inside that context sets `OPENROUTER_API_KEY`, the shared `CODEX_HOME`, and the process-only `CODEX_CUSTOM_PROVIDER_MODEL_CATALOG`, then starts the external patched EXE. Do not set `CODEX_ELECTRON_USER_DATA_PATH`: the original package identity must select the official app's virtualized desktop profile location.
 
@@ -88,7 +88,7 @@ Save the API key as the only line of `%USERPROFILE%\.codex\secrets\openrouter-ap
 .\Start-Codex-Provider.ps1 -KeyFile "$HOME\.codex\secrets\openrouter-api-key.txt" -CodexHome "$HOME\.codex" -CatalogFile "$HOME\.codex-openrouter-test\openrouter-models.json"
 ```
 
-`-AppPath` defaults to `%LOCALAPPDATA%\Programs\Codex-Provider-Patch\ChatGPT.exe`; the other paths above are also defaults and may be omitted. Add `-CheckOnly` to validate them without launching the app or making an API request. Setting `$env:OPENROUTER_API_KEY` before calling `Invoke-CommandInDesktopPackage` is not sufficient because that command does not inherit the caller's environment.
+`-AppPath` defaults to `%LOCALAPPDATA%\Programs\Codex-Provider-Patch\ChatGPT.exe`; the other paths above are also defaults and may be omitted. The derived process catalog is written atomically to `%LOCALAPPDATA%\Codex Provider Patch\runtime-model-catalog.json` only during an actual packaged launch. Add `-CheckOnly` to validate everything without changing that file, launching the app, or making an API request. Setting `$env:OPENROUTER_API_KEY` before calling `Invoke-CommandInDesktopPackage` is not sufficient because that command does not inherit the caller's environment.
 
 Do not put the key in `config.toml`, `desktop-model-providers.json`, a command-line argument, or a committed file. If you use Codex's `[model_providers.openrouter.auth]` command configuration instead, remove `env_key`; these are alternate authentication methods. See the [Codex configuration reference](https://developers.openai.com/codex/config-advanced#custom-model-providers) for supported provider settings.
 
@@ -96,15 +96,19 @@ Leave `model_provider` unset if OpenAI and custom providers should coexist. The 
 
 ## Make custom models available
 
-Codex must know each model's metadata before it can appear in the model menu. Create a catalog from the **current effective** model list, then add your custom model. The launcher passes it only to the patched process; do not add `model_catalog_json` to the shared `config.toml`, because a static global catalog replaces the normal model list.
+Codex must know each model's metadata before it can appear in the model menu. Keep only supplemental model definitions in `openrouter-models.json`. At every launch, the starter reads the current account-specific `%USERPROFILE%\.codex\models_cache.json` without refreshing or changing it, keeps its metadata for every existing slug, and appends only new slugs from the supplemental file. This preserves newly available standard models without putting a static global catalog in the shared configuration.
 
 ```powershell
 New-Item -ItemType Directory -Force "$HOME\.codex-openrouter-test" | Out-Null
-$catalog = codex debug models | Out-String
-[System.IO.File]::WriteAllText("$HOME\.codex-openrouter-test\openrouter-models.json", $catalog, (New-Object System.Text.UTF8Encoding($false)))
+$cache = Get-Content "$HOME\.codex\models_cache.json" -Raw | ConvertFrom-Json
+$template = $cache.models | Where-Object slug -eq 'gpt-5.5' | Select-Object -First 1
+$supplement = [ordered]@{ models = @($template) } | ConvertTo-Json -Depth 100
+[System.IO.File]::WriteAllText("$HOME\.codex-openrouter-test\openrouter-models.json", $supplement, (New-Object System.Text.UTF8Encoding($false)))
 ```
 
-Edit the top-level `models` array in `openrouter-models.json`. Copy an existing entry with similar capabilities and update its `slug`, display name, context window, modalities, reasoning levels, and tool support. The `slug` must be the exact model ID understood by the provider. Preserve other required fields and use the model's actual capabilities. Rebuild this supplemental catalog when the normal app's model list changes.
+Edit the copied entry in the top-level `models` array. Update its `slug`, display name, context window, modalities, reasoning levels, and tool support. The `slug` must be the exact model ID understood by the provider. Preserve other required fields and use the model's actual capabilities. Supplemental slugs must be unique. If a slug later becomes part of the normal catalog, the current normal metadata wins automatically.
+
+The launcher fails closed when `models_cache.json` is missing, invalid, or belongs to another bundled Codex CLI version. In that case, start the official app normally until it loads the current model list, close it completely, and retry. The launcher never runs `codex debug models` or refreshes authentication state itself.
 
 Do not reference this file from the shared `config.toml`. Pass another path with the launcher's `-CatalogFile` option when needed.
 

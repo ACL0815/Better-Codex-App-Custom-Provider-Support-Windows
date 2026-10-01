@@ -32,6 +32,11 @@ from patch_windows_26915 import (
     apply_process_model_catalog_override,
     build_windows_26915_variant,
 )
+from patch_windows_26928 import (
+    WINDOWS_26928_LAYOUT_NAME,
+    apply_process_model_catalog_override_26928,
+    build_windows_26928_variant,
+)
 
 
 PATCH_MARKER = b"__codexDesktopModelProvidersPatchV3"
@@ -970,6 +975,7 @@ PICKER_DIFF_LEGACY_V2_TO_V3 = r"""@@ -10242,7 +10242,7 @@
 
 
 PATCH_VARIANTS: tuple[tuple[str, str, str], ...] = (
+    build_windows_26928_variant(CENTRAL_DIFF, PICKER_DIFF),
     build_windows_26915_variant(CENTRAL_DIFF, PICKER_DIFF),
     ("ChatGPT 26.727 Power Picker", CENTRAL_DIFF_26727, PICKER_DIFF_26727),
     ("ChatGPT 26.721 Power Picker", CENTRAL_DIFF_26721, PICKER_DIFF_26721),
@@ -1173,7 +1179,8 @@ def print_completion_summary(
                 "IDENTITY",
                 "This Owl build requires a Windows package identity before it can start.",
                 "33",
-                detail="Run Register-Codex-PatchIdentity.ps1 for this copy; see README.md.",
+                detail=("Run Start-Codex-Provider.ps1 -AppPath "
+                        f"'{output / 'ChatGPT.exe'}'; see README.md."),
             )
 
     terminal_heading("Important", "33")
@@ -1414,6 +1421,40 @@ def ensure_provider_config(path: Path, overwrite: bool) -> str:
 
 def asar_header_hash(path: Path) -> str:
     return hashlib.sha256(asar_header_json(path)).hexdigest()
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def source_package_full_name(source: Path) -> str | None:
+    parent = source.parent.name
+    return parent if parent.startswith("OpenAI.Codex_") else None
+
+
+def source_codex_cli_version(source: Path) -> str:
+    executable = app_resources(source) / "codex.exe"
+    if not executable.is_file():
+        raise PatchError(f"Bundled Codex CLI not found: {executable}")
+    try:
+        result = subprocess.run(
+            [str(executable), "--version"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise PatchError(f"Cannot read bundled Codex CLI version: {exc}") from exc
+    match = re.search(r"\b(\d+\.\d+\.\d+)\b", result.stdout + result.stderr)
+    if match is None:
+        raise PatchError("Bundled Codex CLI returned no semantic version")
+    return match.group(1)
 
 
 def asar_header_json(path: Path) -> bytes:
@@ -1845,7 +1886,8 @@ def verify_patched_pe_resources(targets: dict[Path, list[dict[str, str]]],
 
 
 def install_portable(source: Path, output: Path, backup_dir: Path,
-                     patched_asar: Path, targets: dict[Path, list[dict[str, str]]]) -> Path | None:
+                     patched_asar: Path, targets: dict[Path, list[dict[str, str]]],
+                     layout: str) -> Path | None:
     ensure_safe_output(source, output, backup_dir)
     if output.exists() and not (output / "codex-provider-patch.json").is_file():
         raise PatchError(f"Existing --output is not a copy made by this tool: {output}")
@@ -1880,9 +1922,25 @@ def install_portable(source: Path, output: Path, backup_dir: Path,
             raise PatchError("Staged ASAR integrity verification failed")
         if not contains_marker(resources / "app.asar"):
             raise PatchError("Staged ASAR has no provider patch marker")
+        source_executable = source / "ChatGPT.exe"
+        patched_executable = staging / "ChatGPT.exe"
+        if not source_executable.is_file() or not patched_executable.is_file():
+            raise PatchError("Owl runtime ChatGPT.exe is missing from source or staged copy")
         (staging / "codex-provider-patch.json").write_text(
-            json.dumps({"format": 1, "source": str(source),
-                        "asar_header_sha256": asar_header_hash(patched_asar)}, indent=2) + "\n",
+            json.dumps({
+                "format": 2,
+                "source": str(source),
+                "source_package_full_name": source_package_full_name(source),
+                "source_executable": "ChatGPT.exe",
+                "executable": "ChatGPT.exe",
+                "source_executable_sha256": file_sha256(source_executable),
+                "executable_sha256": file_sha256(patched_executable),
+                "source_asar_header_sha256": asar_header_hash(app_resources(source) / "app.asar"),
+                "asar_header_sha256": asar_header_hash(patched_asar),
+                "source_codex_cli_version": source_codex_cli_version(source),
+                "layout": layout,
+                "patch_marker": PATCH_MARKER.decode("ascii"),
+            }, indent=2) + "\n",
             encoding="utf-8",
         )
         if output.exists():
@@ -1947,7 +2005,7 @@ def patch_app(app: Path, config: Path, backup_dir: Path, overwrite_config: bool,
             label="Preparing JavaScript bundles")
         layout = apply_supported_patch_variant(central, picker)
         terminal_status("LAYOUT", "Matched a supported application bundle.", "32", detail=layout)
-        if layout == WINDOWS_26915_LAYOUT_NAME:
+        if layout in (WINDOWS_26915_LAYOUT_NAME, WINDOWS_26928_LAYOUT_NAME):
             main_assets = extracted / ".vite" / "build"
             if not main_assets.is_dir():
                 raise PatchError("Extracted app has no .vite/build directory")
@@ -1957,10 +2015,11 @@ def patch_app(app: Path, config: Path, backup_dir: Path, overwrite_config: bool,
                 "App Server launcher",
             )
             try:
+                override = (apply_process_model_catalog_override
+                            if layout == WINDOWS_26915_LAYOUT_NAME
+                            else apply_process_model_catalog_override_26928)
                 app_server_bundle.write_text(
-                    apply_process_model_catalog_override(
-                        app_server_bundle.read_text(encoding="utf-8")
-                    ),
+                    override(app_server_bundle.read_text(encoding="utf-8")),
                     encoding="utf-8",
                 )
             except RuntimeError as exc:
@@ -1988,13 +2047,16 @@ def patch_app(app: Path, config: Path, backup_dir: Path, overwrite_config: bool,
         if dry_run:
             terminal_status("DRY RUN", "Patch packed and verified; no app or config files were changed.", "32")
             return
+        # Packing has produced the complete ASAR plus its unpacked tree. Release
+        # the much larger extraction before staging the portable app copy.
+        shutil.rmtree(extracted)
         if output is None:
             raise PatchError("An output path is required for installation")
         previous_config = config.read_bytes() if config.exists() else None
         config_changed = False
         try:
             config_changed = ensure_provider_config(config, overwrite_config) == "written"
-            backup = install_portable(app, output, backup_dir, patched_asar, targets)
+            backup = install_portable(app, output, backup_dir, patched_asar, targets, layout)
         except Exception:
             if config_changed:
                 if previous_config is None:

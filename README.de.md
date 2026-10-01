@@ -47,7 +47,7 @@ Beende die offizielle Codex-App vollständig. Prüfe dann die Konfiguration und 
 .\Start-Codex-Provider.ps1
 ```
 
-Der Starter beendet selbst keine Prozesse. Er verweigert den Start, solange die offizielle App, eine ältere lokal paketierte Variante oder eine weitere portable Kopie läuft. Außerdem prüft er das installierte `OpenAI.Codex`-Paket, die Herkunft der gepatchten Kopie, gemeinsame Konfiguration, Modellkatalog und Schlüsseldatei.
+Der Starter beendet selbst keine Prozesse. Er verweigert den Start, solange die offizielle App, eine ältere lokal paketierte Variante oder die gewählte portable Kopie läuft. Bevor er die Schlüsseldatei liest, prüft er das installierte `OpenAI.Codex`-Paket, EXE- und ASAR-Hashes, Patchmarker, Herkunftsmetadaten, gemeinsame Konfiguration und Modellkataloge. `-CheckOnly` führt diese Prüfungen und den Katalog-Merge nur im Arbeitsspeicher aus.
 
 Der äußere Starter wechselt mit `Invoke-CommandInDesktopPackage` in den Kontext des **Originalpakets**. Dort setzt ein zweiter PowerShell-Prozess `OPENROUTER_API_KEY`, das gemeinsame `CODEX_HOME` und den nur für diesen Prozess geltenden `CODEX_CUSTOM_PROVIDER_MODEL_CATALOG`, bevor er die externe EXE startet. Setze `CODEX_ELECTRON_USER_DATA_PATH` nicht: Die Original-Paketidentität soll den Profilpfad der offiziellen App auswählen.
 
@@ -72,6 +72,7 @@ Die Standardpfade des Starters sind:
 - `-AppPath`: `%LOCALAPPDATA%\Programs\Codex-Provider-Patch\ChatGPT.exe`
 - `-CodexHome`: `%USERPROFILE%\.codex`
 - `-CatalogFile`: `%USERPROFILE%\.codex-openrouter-test\openrouter-models.json`
+- `-RuntimeCatalogFile`: `%LOCALAPPDATA%\Codex Provider Patch\runtime-model-catalog.json`
 - `-KeyFile`: `%USERPROFILE%\.codex\secrets\openrouter-api-key.txt`
 
 Du kannst sie explizit angeben:
@@ -82,17 +83,21 @@ Du kannst sie explizit angeben:
 
 ## Eigenes Modell verfügbar machen
 
-Erstelle den Zusatzkatalog aus der **aktuellen effektiven** Modellliste:
+Lege einen Zusatzkatalog mit einem passenden Modell als Vorlage an:
 
 ```powershell
 New-Item -ItemType Directory -Force "$HOME\.codex-openrouter-test" | Out-Null
-$catalog = codex debug models | Out-String
-[System.IO.File]::WriteAllText("$HOME\.codex-openrouter-test\openrouter-models.json", $catalog, (New-Object System.Text.UTF8Encoding($false)))
+$cache = Get-Content "$HOME\.codex\models_cache.json" -Raw | ConvertFrom-Json
+$template = $cache.models | Where-Object slug -eq 'gpt-5.5' | Select-Object -First 1
+$supplement = [ordered]@{ models = @($template) } | ConvertTo-Json -Depth 100
+[System.IO.File]::WriteAllText("$HOME\.codex-openrouter-test\openrouter-models.json", $supplement, (New-Object System.Text.UTF8Encoding($false)))
 ```
 
-Ergänze im obersten `models`-Array einen Eintrag für das Provider-Modell. Kopiere dafür ein Modell mit ähnlichen Fähigkeiten und passe `slug`, Anzeigename, Kontextfenster, Modalitäten, Reasoning-Stufen und Werkzeugunterstützung an. Der `slug` muss exakt der Modell-ID des Providers entsprechen.
+Passe den kopierten Eintrag im obersten `models`-Array an: `slug`, Anzeigename, Kontextfenster, Modalitäten, Reasoning-Stufen und Werkzeugunterstützung. Der `slug` muss exakt der Modell-ID des Providers entsprechen; Slugs im Zusatzkatalog müssen eindeutig sein.
 
-Verweise aus der gemeinsamen `config.toml` **nicht** auf diese Datei. Der Starter übergibt sie nur dem gepatchten App-Server-Prozess. Ein globaler statischer Katalog ersetzt dagegen die normale Modellliste und kann veraltete oder unerwünschte Modelle anzeigen.
+Verweise aus der gemeinsamen `config.toml` **nicht** auf diese Datei. Der Starter liest bei jedem Start den kontobezogenen `%USERPROFILE%\.codex\models_cache.json`, behält dessen aktuelle Metadaten und ergänzt ausschließlich dort noch nicht vorhandene Slugs. Gleiche Slugs verwenden stets die normalen Metadaten. Den daraus abgeleiteten Laufzeitkatalog schreibt er erst beim tatsächlichen Start atomisch in die eigene Datei unter `%LOCALAPPDATA%\Codex Provider Patch`; `-CheckOnly` verändert keine Datei.
+
+Fehlt `models_cache.json`, ist die Datei ungültig oder passt ihre CLI-Version nicht zur gepatchten App, bricht der Starter ab. Starte dann die offizielle App normal, bis sie den aktuellen Modellkatalog geladen hat, beende sie vollständig und versuche es erneut. Der Starter führt selbst weder `codex debug models` noch eine Aktualisierung von Anmeldung oder Cache aus.
 
 `%USERPROFILE%\.codex\desktop-model-providers.json` steuert die Provider-Menüeinträge und ordnet Modell-IDs den Providern zu. „Automatic“ ordnet einem bereits gewählten Modell den Provider zu; es entscheidet nicht zwischen Astra und Sol. Änderungen an dieser JSON-Datei erfordern keinen erneuten Patch.
 

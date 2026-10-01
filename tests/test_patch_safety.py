@@ -16,6 +16,10 @@ from patch_windows_26915 import (
     APP_SERVER_ENV_MAPPINGS_ANCHOR,
     WINDOWS_26915_LAYOUT_NAME,
 )
+from patch_windows_26928 import (
+    APP_SERVER_ENV_MAPPINGS_ANCHOR as APP_SERVER_ENV_MAPPINGS_ANCHOR_26928,
+    WINDOWS_26928_LAYOUT_NAME,
+)
 
 
 def original_for_diff(diff: str) -> str:
@@ -60,6 +64,85 @@ class PatchSafetyTests(unittest.TestCase):
                 patch.apply_supported_patch_variant(central, picker)
             self.assertEqual(central.read_text(encoding="utf-8"), "unsupported central\n")
             self.assertEqual(picker.read_text(encoding="utf-8"), "unsupported picker\n")
+
+    def test_changed_26928_hunk_fails_closed_without_partial_edits(self) -> None:
+        name, central_diff, picker_diff = patch.PATCH_VARIANTS[0]
+        self.assertEqual(name, WINDOWS_26928_LAYOUT_NAME)
+        with tempfile.TemporaryDirectory() as temporary:
+            central = Path(temporary, "central.js")
+            picker = Path(temporary, "picker.js")
+            original_central = original_for_diff(central_diff).replace(
+                "async prewarmThreadStart(", "async changedPrewarmThreadStart(", 1
+            )
+            original_picker = original_for_diff(picker_diff)
+            central.write_text(original_central, encoding="utf-8")
+            picker.write_text(original_picker, encoding="utf-8")
+            with self.assertRaises(patch.PatchError):
+                patch.apply_supported_patch_variant(central, picker)
+            self.assertEqual(central.read_text(encoding="utf-8"), original_central)
+            self.assertEqual(picker.read_text(encoding="utf-8"), original_picker)
+
+    def test_26928_check_discovers_and_patches_separate_app_server_bundle(self) -> None:
+        name, central_diff, picker_diff = patch.PATCH_VARIANTS[0]
+        self.assertEqual(name, WINDOWS_26928_LAYOUT_NAME)
+        with tempfile.TemporaryDirectory() as temporary:
+            app = Path(temporary, "installed", "app")
+            resources = app / "resources"
+            resources.mkdir(parents=True)
+            (resources / "app.asar").write_bytes(synthetic_asar({"files": {}}))
+
+            def fake_run(command: list[str], **_kwargs: object) -> None:
+                if "extract" not in command:
+                    return
+                extracted = Path(command[-1])
+                web_assets = extracted / "webview" / "assets"
+                main_assets = extracted / ".vite" / "build"
+                web_assets.mkdir(parents=True)
+                main_assets.mkdir(parents=True)
+                (web_assets / "app-shared.js").write_text(
+                    original_for_diff(central_diff) + "\nasync sendConfigReadRequest(\n",
+                    encoding="utf-8",
+                )
+                (web_assets / "app-primary.js").write_text(
+                    original_for_diff(picker_diff)
+                    + "\ncomposer.intelligenceDropdown.tooltip\nmodelOptionsDisabled\n",
+                    encoding="utf-8",
+                )
+                (web_assets / "unrelated.js").write_text("unrelated", encoding="utf-8")
+                (main_assets / "application-network-startup.js").write_text(
+                    APP_SERVER_ENV_MAPPINGS_ANCHOR_26928, encoding="utf-8"
+                )
+                (main_assets / "unrelated.js").write_text("unrelated", encoding="utf-8")
+
+            original_override = patch.apply_process_model_catalog_override_26928
+            overridden_sources: list[str] = []
+
+            def record_override(source: str) -> str:
+                result = original_override(source)
+                overridden_sources.append(result)
+                return result
+
+            with mock_patch.object(patch.sys, "platform", "win32"), \
+                 mock_patch.object(patch.shutil, "which", return_value="npx"), \
+                 mock_patch.object(patch, "integrity_targets", return_value={}), \
+                 mock_patch.object(patch, "contains_marker", return_value=False), \
+                 mock_patch.object(patch, "run", side_effect=fake_run), \
+                 mock_patch.object(
+                     patch,
+                     "apply_process_model_catalog_override_26928",
+                     side_effect=record_override,
+                 ) as override:
+                patch.patch_app(
+                    app,
+                    Path(temporary, "unused-config.json"),
+                    Path(temporary, "backups"),
+                    overwrite_config=False,
+                    check_only=True,
+                )
+            override.assert_called_once()
+            self.assertIn(APP_SERVER_ENV_MAPPINGS_ANCHOR_26928, override.call_args.args[0])
+            self.assertIn("CODEX_CUSTOM_PROVIDER_MODEL_CATALOG", overridden_sources[0])
+            self.assertIn("model_catalog_json", overridden_sources[0])
 
     def test_repeated_hunk_is_rejected(self) -> None:
         diff = "@@ -1,1 +1,1 @@\n-old\n+new"
@@ -181,6 +264,7 @@ class PatchSafetyTests(unittest.TestCase):
             (output / "resources").mkdir(parents=True)
             original_bytes = synthetic_asar({"files": {}})
             (source / "resources" / "app.asar").write_bytes(original_bytes)
+            (source / "ChatGPT.exe").write_bytes(b"fixture executable")
             (output / "original.txt").write_text("keep me", encoding="utf-8")
             (output / "codex-provider-patch.json").write_text("{}", encoding="utf-8")
             patched.write_bytes(original_bytes + patch.PATCH_MARKER)
@@ -192,9 +276,12 @@ class PatchSafetyTests(unittest.TestCase):
                 return original_rename(path, target)
 
             with mock_patch.object(patch, "find_target_app_processes", return_value=[]), \
+                 mock_patch.object(patch, "source_codex_cli_version", return_value="fixture-cli"), \
                  mock_patch.object(Path, "rename", fail_stage_rename):
                 with self.assertRaisesRegex(OSError, "simulated publish failure"):
-                    patch.install_portable(source, output, backup_dir, patched, {})
+                    patch.install_portable(
+                        source, output, backup_dir, patched, {}, WINDOWS_26928_LAYOUT_NAME
+                    )
 
             self.assertEqual((output / "original.txt").read_text(encoding="utf-8"), "keep me")
             self.assertEqual((source / "resources" / "app.asar").read_bytes(), original_bytes)
