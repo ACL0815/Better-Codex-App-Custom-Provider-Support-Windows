@@ -285,7 +285,137 @@ class PatchSafetyTests(unittest.TestCase):
 
             self.assertEqual((output / "original.txt").read_text(encoding="utf-8"), "keep me")
             self.assertEqual((source / "resources" / "app.asar").read_bytes(), original_bytes)
+            self.assertFalse(patched.exists())
             self.assertFalse(any(base.glob(".portable.stage-*")))
+
+    def test_portable_copy_skips_only_replaced_top_level_asar(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            source = base / "installed"
+            resources = source / "resources"
+            unpacked = resources / "app.asar.unpacked"
+            nested = resources / "nested"
+            output = base / "portable"
+            patched = base / "patched.asar"
+            unpacked.mkdir(parents=True)
+            nested.mkdir()
+            original_asar = synthetic_asar({"files": {"original.js": {"size": 1}}})
+            patched_asar = (
+                synthetic_asar({"files": {"patched.js": {"size": 1}}}) + patch.PATCH_MARKER
+            )
+            (resources / "app.asar").write_bytes(original_asar)
+            (unpacked / "native.node").write_bytes(b"preserve unpacked payload")
+            (nested / "app.asar").write_bytes(b"preserve nested archive")
+            (source / "ChatGPT.exe").write_bytes(b"fixture executable")
+            patched.write_bytes(patched_asar)
+
+            original_copytree = patch.shutil.copytree
+            inspected_ignore = False
+
+            def inspect_copytree(src: Path, dst: Path, *args: object, **kwargs: object) -> Path:
+                nonlocal inspected_ignore
+                ignore = kwargs.get("ignore")
+                if Path(src) == source:
+                    self.assertIsNotNone(ignore)
+                    self.assertEqual(
+                        ignore(str(resources), ["app.asar", "app.asar.unpacked", "nested"]),
+                        {"app.asar"},
+                    )
+                    self.assertEqual(ignore(str(nested), ["app.asar"]), set())
+                    inspected_ignore = True
+                return original_copytree(src, dst, *args, **kwargs)
+
+            with mock_patch.object(patch, "find_target_app_processes", return_value=[]), \
+                 mock_patch.object(patch, "source_codex_cli_version", return_value="fixture-cli"), \
+                 mock_patch.object(patch.shutil, "copytree", side_effect=inspect_copytree):
+                patch.install_portable(
+                    source,
+                    output,
+                    base / "backups",
+                    patched,
+                    {},
+                    WINDOWS_26928_LAYOUT_NAME,
+                )
+
+            self.assertTrue(inspected_ignore)
+            self.assertEqual((output / "resources" / "app.asar").read_bytes(), patched_asar)
+            self.assertFalse(patched.exists())
+            self.assertEqual((resources / "app.asar").read_bytes(), original_asar)
+            self.assertEqual(
+                (output / "resources" / "app.asar.unpacked" / "native.node").read_bytes(),
+                b"preserve unpacked payload",
+            )
+            self.assertEqual(
+                (output / "resources" / "nested" / "app.asar").read_bytes(),
+                b"preserve nested archive",
+            )
+
+            cross_volume_patched = base / "cross-volume.asar"
+            cross_volume_output = base / "cross-volume-portable"
+            cross_volume_patched.write_bytes(patched_asar)
+            original_stat = Path.stat
+
+            def different_volume_stat(path: Path, *args: object, **kwargs: object):
+                result = original_stat(path, *args, **kwargs)
+                if path == cross_volume_patched:
+                    values = list(result)
+                    values[2] = result.st_dev + 1
+                    return type(result)(values)
+                return result
+
+            original_copy2 = patch.shutil.copy2
+            with mock_patch.object(patch, "find_target_app_processes", return_value=[]), \
+                 mock_patch.object(patch, "source_codex_cli_version", return_value="fixture-cli"), \
+                 mock_patch.object(Path, "stat", different_volume_stat), \
+                 mock_patch.object(patch.shutil, "copy2", wraps=original_copy2) as copy2:
+                patch.install_portable(
+                    source,
+                    cross_volume_output,
+                    base / "cross-volume-backups",
+                    cross_volume_patched,
+                    {},
+                    WINDOWS_26928_LAYOUT_NAME,
+                )
+
+            self.assertTrue(cross_volume_patched.exists())
+            self.assertEqual(
+                (cross_volume_output / "resources" / "app.asar").read_bytes(), patched_asar
+            )
+            self.assertTrue(any(call.args[0] == cross_volume_patched for call in copy2.call_args_list))
+
+    def test_same_volume_payload_move_does_not_hide_replace_failures(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            source = base / "installed"
+            (source / "resources").mkdir(parents=True)
+            (source / "resources" / "app.asar").write_bytes(synthetic_asar({"files": {}}))
+            (source / "ChatGPT.exe").write_bytes(b"fixture executable")
+            patched = base / "patched.asar"
+            patched.write_bytes(synthetic_asar({"files": {}}) + patch.PATCH_MARKER)
+            original_replace = Path.replace
+
+            def reject_payload_move(path: Path, target: Path) -> Path:
+                if path == patched:
+                    raise PermissionError("simulated same-volume move failure")
+                return original_replace(path, target)
+
+            original_copy2 = patch.shutil.copy2
+            with mock_patch.object(patch, "find_target_app_processes", return_value=[]), \
+                 mock_patch.object(Path, "replace", reject_payload_move), \
+                 mock_patch.object(patch.shutil, "copy2", wraps=original_copy2) as copy2:
+                with self.assertRaisesRegex(PermissionError, "same-volume move failure"):
+                    patch.install_portable(
+                        source,
+                        base / "portable",
+                        base / "backups",
+                        patched,
+                        {},
+                        WINDOWS_26928_LAYOUT_NAME,
+                    )
+
+            self.assertTrue(patched.exists())
+            self.assertFalse(copy2.called)
+            self.assertFalse((base / "portable").exists())
 
 
 if __name__ == "__main__":

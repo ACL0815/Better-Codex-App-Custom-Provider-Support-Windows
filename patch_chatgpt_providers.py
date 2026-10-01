@@ -1888,6 +1888,7 @@ def verify_patched_pe_resources(targets: dict[Path, list[dict[str, str]]],
 def install_portable(source: Path, output: Path, backup_dir: Path,
                      patched_asar: Path, targets: dict[Path, list[dict[str, str]]],
                      layout: str) -> Path | None:
+    """Publish a staged copy; same-volume publication consumes ``patched_asar``."""
     ensure_safe_output(source, output, backup_dir)
     if output.exists() and not (output / "codex-provider-patch.json").is_file():
         raise PatchError(f"Existing --output is not a copy made by this tool: {output}")
@@ -1900,12 +1901,27 @@ def install_portable(source: Path, output: Path, backup_dir: Path,
     backup: Path | None = None
     staged = False
     try:
+        patched_hash = asar_header_hash(patched_asar)
+        patched_size = patched_asar.stat().st_size
+        patched_unpacked = patched_asar.with_name(patched_asar.name + ".unpacked")
         # copytree into a sibling so no live app file is changed until validation passes
         shutil.rmtree(staging)
-        shutil.copytree(source, staging, symlinks=False)
-        resources = app_resources(staging)
-        shutil.copy2(patched_asar, resources / "app.asar")
-        patched_unpacked = patched_asar.with_name(patched_asar.name + ".unpacked")
+        source_resources = app_resources(source).resolve()
+        resources_relative = source_resources.relative_to(source.resolve())
+
+        def ignore_replaced_asar(directory: str, names: list[str]) -> set[str]:
+            path = Path(directory).resolve()
+            return {"app.asar"} if path == source_resources and "app.asar" in names else set()
+
+        shutil.copytree(source, staging, symlinks=False, ignore=ignore_replaced_asar)
+        resources = staging / resources_relative
+        if not resources.is_dir():
+            raise PatchError(f"Staged app resources directory is missing: {resources}")
+        staged_asar = resources / "app.asar"
+        if patched_asar.stat().st_dev == resources.stat().st_dev:
+            patched_asar.replace(staged_asar)
+        else:
+            shutil.copy2(patched_asar, staged_asar)
         if patched_unpacked.exists():
             old_unpacked = resources / "app.asar.unpacked"
             if old_unpacked.exists():
@@ -1913,14 +1929,14 @@ def install_portable(source: Path, output: Path, backup_dir: Path,
             shutil.copytree(patched_unpacked, old_unpacked)
         for executable, entries in targets.items():
             copied = staging / executable.name
-            updated = updated_integrity_entries(entries, asar_header_hash(patched_asar))
+            updated = updated_integrity_entries(entries, patched_hash)
             write_pe_asar_integrity(copied, updated)
             verified = read_pe_asar_integrity(copied)
             if verified != updated:
                 raise PatchError(f"PE integrity update failed for {copied}")
-        if asar_header_hash(resources / "app.asar") != asar_header_hash(patched_asar):
+        if staged_asar.stat().st_size != patched_size or asar_header_hash(staged_asar) != patched_hash:
             raise PatchError("Staged ASAR integrity verification failed")
-        if not contains_marker(resources / "app.asar"):
+        if not contains_marker(staged_asar):
             raise PatchError("Staged ASAR has no provider patch marker")
         source_executable = source / "ChatGPT.exe"
         patched_executable = staging / "ChatGPT.exe"
@@ -1936,7 +1952,7 @@ def install_portable(source: Path, output: Path, backup_dir: Path,
                 "source_executable_sha256": file_sha256(source_executable),
                 "executable_sha256": file_sha256(patched_executable),
                 "source_asar_header_sha256": asar_header_hash(app_resources(source) / "app.asar"),
-                "asar_header_sha256": asar_header_hash(patched_asar),
+                "asar_header_sha256": patched_hash,
                 "source_codex_cli_version": source_codex_cli_version(source),
                 "layout": layout,
                 "patch_marker": PATCH_MARKER.decode("ascii"),
