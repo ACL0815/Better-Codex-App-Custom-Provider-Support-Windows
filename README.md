@@ -18,7 +18,7 @@ This tool builds a **separate, patched app copy**. It does not modify the instal
 
 Windows Store/MSIX app directories, including `WindowsApps`, are treated as read-only sources. The output is a writable external copy. The launcher validates that it was created from the currently installed package before starting it. The patch also depends on internal JavaScript structures that can change with any app update.
 
-The Windows-specific patch targets Codex package **26.915.4065.0** (internal app version **26.915.31945**). It routes **local tasks only**; remote and cloud tasks retain their original routing. Earlier upstream exact-match layouts are retained, but are not separately certified for Windows. Other builds are accepted only if one complete supported layout matches.
+The current Windows-specific patch targets Codex package **26.930.3930.0** (internal app version **26.930.31730**). Earlier Windows layouts for 26.928.3736.0 and 26.915.4065.0 are retained. It routes **local tasks only**; remote and cloud tasks retain their original routing. Other builds are accepted only if one complete supported layout matches.
 
 ## Build the patched copy
 
@@ -41,6 +41,8 @@ py -3 .\patch_chatgpt_providers.py
 ```
 
 If Python is installed without the `py` launcher, replace `py -3` with `python`. The default output location is `%LOCALAPPDATA%\Programs\Codex-Provider-Patch`; backups are stored under `%LOCALAPPDATA%\Codex Provider Patch Backups`. The command prints the exact paths it used.
+
+Every successful installation or update creates or refreshes **Codex - OpenRouter-Test** on your Windows Desktop, including redirected OneDrive Desktops. The shortcut uses Windows PowerShell 5.1 and the launcher copied into the installed output, with its exact app path; moving this repository does not break it. API keys are read from the local key file only at launch. `--check` and `--dry-run` do not change Desktop shortcuts. Close Codex completely before opening this shortcut, then create a new local task and choose OpenRouter or Automatic for a configured custom model. Standard models remain available.
 
 Do not start `ChatGPT.exe` directly: the Owl build exits with `process has no package identity`. Use `Start-Codex-Provider.ps1` below. The original Start menu entry continues to open the official installation.
 
@@ -154,9 +156,9 @@ When an Electron ASAR integrity resource is present, the Python patch verifies i
 
 ## Verification
 
-The port was checked on Windows against Codex package 26.915.4065.0: the full `--dry-run` extracted, patched, syntax-checked and repacked the real app archive, preserving its unpacked-file layout. All 14 unittest regressions and two launcher checks passed, covering process-only catalog injection, launcher path validation, generated JavaScript routing behavior, and failed-publication rollback. Windows PE integrity updates were also round-tripped on a temporary executable copy.
+Codex package 26.930.3930.0 passed the full source compatibility check and patched-copy build, including JavaScript syntax checks, unpacked-file layout preservation, manifest hashes and Windows PE integrity verification. All 34 offline regression tests passed, including repeated Desktop shortcut creation, atomic catalog updates, failed replacements and source changes during staging. The installed launcher's read-only `-CheckOnly` succeeded with 10 standard models plus 1 custom model; it did not write a runtime catalog.
 
-Run the regression suite with `python -m unittest discover -s tests -v` (Node.js is needed for the JavaScript behavior tests). The external patched EXE started successfully under the exact original package identity and launched its app-server. A separate OpenRouter Responses API request succeeded. Restarting against the user's existing signed-in GUI profile and confirming shared history, an OpenRouter task in the app, and end-to-end provider routing remain to be verified.
+Run the regression suite with `python -m unittest discover -s tests -v` (Node.js is needed for the JavaScript behavior tests). The Desktop shortcut was inspected without opening it. The current GUI session remained running; the new copy was not launched. Shared sign-in, visible history and an end-to-end OpenRouter task in this build remain to be verified after the user closes Codex and opens the shortcut.
 
 ## Origin and license
 

@@ -12,14 +12,24 @@ from patch_windows_26915 import (
 )
 
 
+from patch_windows_26930 import build_windows_26930_variant, apply_process_model_catalog_override_26930
+
+
 class CurrentWindowsRoutingTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("node"), "Node.js is required for JavaScript behavior checks")
     def test_optional_process_catalog_becomes_app_server_config_override(self):
+        self.check_catalog_override(apply_process_model_catalog_override, "QZ")
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js is required for JavaScript behavior checks")
+    def test_26930_optional_catalog_becomes_app_server_config_override(self):
+        self.check_catalog_override(apply_process_model_catalog_override_26930, "Es")
+
+    def check_catalog_override(self, apply_override, mapping_variable):
         source = r"""
 var ZZ=[`-c`,`features.code_mode_host=true`],QZ=[{configKey:`chatgpt_base_url`,envVar:`CODEX_APP_SERVER_CHATGPT_BASE_URL`},{configKey:`openai_base_url`,envVar:`CODEX_APP_SERVER_OPENAI_BASE_URL`}];
 function EQ(){let e=QZ.flatMap(({configKey:e,envVar:t})=>{let n=process.env[t]?.trim();return n==null||n===``?[]:[`-c`,`${e}=${JSON.stringify(n)}`]});return e.length===0?[...ZZ,`app-server`,`--analytics-default-enabled`]:[`app-server`,...ZZ,...e,`--analytics-default-enabled`]}
 """
-        generated = apply_process_model_catalog_override(source)
+        generated = apply_override(source.replace("QZ", mapping_variable))
         harness = generated + rf"""
 const assert = require('node:assert/strict');
 delete process.env.{MODEL_CATALOG_ENV};
@@ -37,12 +47,19 @@ assert.deepEqual(EQ(), ['-c','features.code_mode_host=true','app-server','--anal
 
     @unittest.skipUnless(shutil.which("node"), "Node.js is required for JavaScript behavior checks")
     def test_generated_routing_handles_local_and_remote_requests(self):
-        _, central, _ = build_windows_26915_variant(patch.CENTRAL_DIFF, patch.PICKER_DIFF)
+        self.check_routing_variant(build_windows_26915_variant, "Wv", "xen")
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js is required for JavaScript behavior checks")
+    def test_26930_routing_handles_local_and_remote_requests(self):
+        self.check_routing_variant(build_windows_26930_variant, "uJ", "Fsn")
+
+    def check_routing_variant(self, build_variant, bridge_name, next_variable):
+        _, central, _ = build_variant(patch.CENTRAL_DIFF, patch.PICKER_DIFF)
         additions = "\n".join(
             line[1:] for line in central.splitlines() if line.startswith("+")
         )
         start = additions.index("function codexProviderRoutingFallback() {")
-        end = additions.index("\nvar xen,", start)
+        end = additions.index("\nvar " + next_variable + ",", start)
         helpers = additions[start:end]
         harness = r"""
 const assert = require('node:assert/strict');
@@ -90,6 +107,7 @@ async function Wv(method, options) {
   assert.match(codexProviderRoutingState().error, /Unsupported version/);
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """
+        harness = harness.replace("async function Wv(", "async function " + bridge_name + "(")
         result = subprocess.run(
             [shutil.which("node"), "-"], input=harness, text=True,
             capture_output=True, check=False,

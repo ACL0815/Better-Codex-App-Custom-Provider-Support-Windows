@@ -7,7 +7,7 @@ Der Patcher erstellt eine separate App-Kopie und lässt die installierte Store-A
 > [!CAUTION]
 > Die Provider-Auswahl wird beim Start einer Aufgabe festgelegt. Eine laufende Aufgabe wechselt ihren Provider nicht nachträglich.
 
-Die Windows-spezifische Variante ist auf Codex **26.915.4065.0** zugeschnitten. Remote- und Cloud-Aufgaben behalten ihre bisherige Weiterleitung.
+Die aktuelle Windows-spezifische Variante ist auf Codex **26.930.3930.0** zugeschnitten (interne App-Version **26.930.31730**). Die früheren Windows-Layouts für 26.928.3736.0 und 26.915.4065.0 bleiben enthalten. Remote- und Cloud-Aufgaben behalten ihre bisherige Weiterleitung.
 
 ## Voraussetzungen
 
@@ -28,6 +28,8 @@ py -3 .\patch_chatgpt_providers.py
 ```
 
 Falls der Python-Launcher fehlt, verwende `python` statt `py -3`. Die Ausgabe liegt standardmäßig unter `%LOCALAPPDATA%\Programs\Codex-Provider-Patch`; Sicherungen liegen unter `%LOCALAPPDATA%\Codex Provider Patch Backups`. Für den Start mit gemeinsamem Profil muss `--app` auf den `app`-Ordner des aktuell installierten `OpenAI.Codex`-Pakets zeigen. Der Starter vergleicht diese Quelle mit `codex-provider-patch.json` und lehnt Kopien aus beliebigen anderen Quellen ab. Alle Patcher-Optionen zeigt `--help`.
+
+Jede erfolgreiche Installation oder Aktualisierung erstellt beziehungsweise erneuert **Codex - OpenRouter-Test** auf deinem Windows-Desktop, auch bei Umleitung nach OneDrive. Die Verknüpfung verwendet Windows PowerShell 5.1 und den mitinstallierten Starter samt genauem App-Pfad. Sie funktioniert auch nach Verschieben dieses Repositorys. Den API-Schlüssel liest der Starter beim Start aus der lokalen Schlüsseldatei. `--check` und `--dry-run` ändern keine Desktop-Verknüpfung. Beende Codex vollständig, öffne die Verknüpfung und erstelle eine neue lokale Aufgabe; wähle für ein konfiguriertes Custom-Modell OpenRouter oder Automatic. Die normalen Modelle bleiben verfügbar.
 
 Ein eigenes `--output`-Ziel ist möglich. Übergib dann dessen EXE an den Starter:
 
@@ -107,8 +109,8 @@ Nach jedem App-Update erneut `--check` und `--dry-run` ausführen und die Kopie 
 
 ## Verifikation
 
-Für Codex 26.915.4065.0 wurden der vollständige Dry Run, die Patch-Erstellung, 14 unittest-Regressionstests und zwei Starter-Prüfungen erfolgreich ausgeführt. Die externe gepatchte EXE startete unter der exakten Original-Paketidentität und ihr App-Server lief an. Eine getrennte Anfrage an die OpenRouter Responses API war ebenfalls erfolgreich.
+Codex 26.930.3930.0 bestand die vollständige Quell-Kompatibilitätsprüfung und Patch-Erstellung samt JavaScript-Syntaxprüfung, unverändertem Unpacked-Dateilayout, Manifest-Hashes und Windows-PE-Integrität. Alle 34 Offline-Regressionstests bestanden, darunter wiederholte Desktop-Verknüpfungserstellung, atomare Katalog-Aktualisierung, fehlgeschlagene Ersetzungen und Quellenänderungen während der Installation. `-CheckOnly` des mitinstallierten Starters war mit 10 Standardmodellen und 1 Custom-Modell erfolgreich und schrieb keinen Laufzeitkatalog.
 
-Noch offen sind ein Neustart mit der bestehenden angemeldeten GUI-Sitzung, die sichtbare gemeinsame Historie sowie eine vollständige OpenRouter-Aufgabe innerhalb der gepatchten App. Diese Punkte werden daher nicht als bestätigt dargestellt.
+Die Desktop-Verknüpfung wurde ohne Öffnen geprüft. Die laufende GUI-Sitzung blieb geöffnet; die neue Kopie wurde nicht gestartet. Gemeinsame Anmeldung, sichtbare Historie und eine vollständige OpenRouter-Aufgabe in diesem Build bleiben bis zum bewussten Start über die Verknüpfung nach Beenden von Codex ungeprüft.
 
 Inoffizielles Projekt, nicht von OpenAI unterstützt. Es gilt die [Unlicense](LICENSE).

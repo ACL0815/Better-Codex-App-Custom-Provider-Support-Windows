@@ -97,12 +97,16 @@ function Write-JsonAtomic([string]$Path, $Value) {
     $directory = Split-Path $Path
     [IO.Directory]::CreateDirectory($directory) | Out-Null
     $temporary = Join-Path $directory ('.' + [IO.Path]::GetFileName($Path) + '.' + [guid]::NewGuid().ToString('N') + '.tmp')
+    $backup = $temporary + '.previous'
     try {
         [IO.File]::WriteAllText($temporary, (($Value | ConvertTo-Json -Depth 100 -Compress) + "`n"), (New-Object Text.UTF8Encoding($false)))
-        if (Test-Path -LiteralPath $Path) { [IO.File]::Replace($temporary, $Path, $null) }
+        # PowerShell 5.1 converts a null backup argument into an invalid empty
+        # path; a unique sibling backup keeps repeated catalog writes atomic.
+        if (Test-Path -LiteralPath $Path) { [IO.File]::Replace($temporary, $Path, $backup) }
         else { [IO.File]::Move($temporary, $Path) }
     } finally {
         if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force }
+        if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Force }
     }
 }
 

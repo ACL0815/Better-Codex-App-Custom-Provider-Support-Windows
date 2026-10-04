@@ -38,6 +38,12 @@ from patch_windows_26928 import (
     build_windows_26928_variant,
 )
 
+from patch_windows_26930 import (
+    WINDOWS_26930_LAYOUT_NAME,
+    apply_process_model_catalog_override_26930,
+    build_windows_26930_variant,
+)
+
 
 PATCH_MARKER = b"__codexDesktopModelProvidersPatchV3"
 LEGACY_PATCH_MARKER = b"__codexDesktopModelProvidersPatchV2"
@@ -975,6 +981,7 @@ PICKER_DIFF_LEGACY_V2_TO_V3 = r"""@@ -10242,7 +10242,7 @@
 
 
 PATCH_VARIANTS: tuple[tuple[str, str, str], ...] = (
+    build_windows_26930_variant(CENTRAL_DIFF, PICKER_DIFF),
     build_windows_26928_variant(CENTRAL_DIFF, PICKER_DIFF),
     build_windows_26915_variant(CENTRAL_DIFF, PICKER_DIFF),
     ("ChatGPT 26.727 Power Picker", CENTRAL_DIFF_26727, PICKER_DIFF_26727),
@@ -1896,6 +1903,8 @@ def install_portable(source: Path, output: Path, backup_dir: Path,
     if running:
         pids = ", ".join(str(pid) for pid, _ in running)
         raise PatchError(f"Portable output is running (PIDs: {pids}); close it and retry")
+    source_executable_hash = file_sha256(source / "ChatGPT.exe")
+    source_asar_hash = asar_header_hash(app_resources(source) / "app.asar")
     output.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=f".{output.name}.stage-", dir=output.parent))
     backup: Path | None = None
@@ -1942,6 +1951,9 @@ def install_portable(source: Path, output: Path, backup_dir: Path,
         patched_executable = staging / "ChatGPT.exe"
         if not source_executable.is_file() or not patched_executable.is_file():
             raise PatchError("Owl runtime ChatGPT.exe is missing from source or staged copy")
+        # Keep activation self-contained when the repository is moved or removed.
+        for launcher_name in ("Start-Codex-Provider.ps1", "Register-Codex-DesktopShortcut.ps1"):
+            shutil.copy2(Path(__file__).resolve().parent / launcher_name, staging / launcher_name)
         (staging / "codex-provider-patch.json").write_text(
             json.dumps({
                 "format": 2,
@@ -1949,9 +1961,9 @@ def install_portable(source: Path, output: Path, backup_dir: Path,
                 "source_package_full_name": source_package_full_name(source),
                 "source_executable": "ChatGPT.exe",
                 "executable": "ChatGPT.exe",
-                "source_executable_sha256": file_sha256(source_executable),
+                "source_executable_sha256": source_executable_hash,
                 "executable_sha256": file_sha256(patched_executable),
-                "source_asar_header_sha256": asar_header_hash(app_resources(source) / "app.asar"),
+                "source_asar_header_sha256": source_asar_hash,
                 "asar_header_sha256": patched_hash,
                 "source_codex_cli_version": source_codex_cli_version(source),
                 "layout": layout,
@@ -1959,6 +1971,9 @@ def install_portable(source: Path, output: Path, backup_dir: Path,
             }, indent=2) + "\n",
             encoding="utf-8",
         )
+        if (file_sha256(source_executable) != source_executable_hash or
+                asar_header_hash(app_resources(source) / "app.asar") != source_asar_hash):
+            raise PatchError("Source app changed while staging; retry from the current installed app")
         if output.exists():
             backup_dir.mkdir(parents=True, exist_ok=True)
             backup = backup_name(output, backup_dir)
@@ -1973,6 +1988,22 @@ def install_portable(source: Path, output: Path, backup_dir: Path,
     finally:
         if not staged and staging.exists():
             shutil.rmtree(staging)
+    # Every successful install/update refreshes this dedicated Desktop shortcut.
+    # Windows resolves the user's actual (possibly redirected) Desktop itself.
+    powershell = Path(os.environ["WINDIR"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+    shortcut_result = subprocess.run(
+        [str(powershell), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+         str(output / "Register-Codex-DesktopShortcut.ps1"),
+         "-AppPath", str(output / "ChatGPT.exe"),
+         "-LauncherPath", str(output / "Start-Codex-Provider.ps1")],
+        capture_output=True, text=True, check=False,
+    )
+    if shortcut_result.returncode != 0:
+        raise PatchError("The app copy was installed, but the Desktop shortcut could not be created. "
+                         "Retry Register-Codex-DesktopShortcut.ps1 in the output folder. "
+                         + (shortcut_result.stderr.strip() or shortcut_result.stdout.strip()))
+    terminal_status("DESKTOP", "OpenRouter starter shortcut created or refreshed.", "32",
+                    detail=shortcut_result.stdout.strip())
     return backup
 
 
@@ -2021,7 +2052,7 @@ def patch_app(app: Path, config: Path, backup_dir: Path, overwrite_config: bool,
             label="Preparing JavaScript bundles")
         layout = apply_supported_patch_variant(central, picker)
         terminal_status("LAYOUT", "Matched a supported application bundle.", "32", detail=layout)
-        if layout in (WINDOWS_26915_LAYOUT_NAME, WINDOWS_26928_LAYOUT_NAME):
+        if layout in (WINDOWS_26915_LAYOUT_NAME, WINDOWS_26928_LAYOUT_NAME, WINDOWS_26930_LAYOUT_NAME):
             main_assets = extracted / ".vite" / "build"
             if not main_assets.is_dir():
                 raise PatchError("Extracted app has no .vite/build directory")
@@ -2033,6 +2064,8 @@ def patch_app(app: Path, config: Path, backup_dir: Path, overwrite_config: bool,
             try:
                 override = (apply_process_model_catalog_override
                             if layout == WINDOWS_26915_LAYOUT_NAME
+                            else apply_process_model_catalog_override_26930
+                            if layout == WINDOWS_26930_LAYOUT_NAME
                             else apply_process_model_catalog_override_26928)
                 app_server_bundle.write_text(
                     override(app_server_bundle.read_text(encoding="utf-8")),

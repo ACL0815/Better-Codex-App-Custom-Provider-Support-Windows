@@ -7,6 +7,7 @@ import hashlib
 import json
 from pathlib import Path
 import struct
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch as mock_patch
@@ -19,6 +20,11 @@ from patch_windows_26915 import (
 from patch_windows_26928 import (
     APP_SERVER_ENV_MAPPINGS_ANCHOR as APP_SERVER_ENV_MAPPINGS_ANCHOR_26928,
     WINDOWS_26928_LAYOUT_NAME,
+)
+
+from patch_windows_26930 import (
+    APP_SERVER_ENV_MAPPINGS_ANCHOR as APP_SERVER_ENV_MAPPINGS_ANCHOR_26930,
+    WINDOWS_26930_LAYOUT_NAME,
 )
 
 
@@ -66,8 +72,16 @@ class PatchSafetyTests(unittest.TestCase):
             self.assertEqual(picker.read_text(encoding="utf-8"), "unsupported picker\n")
 
     def test_changed_26928_hunk_fails_closed_without_partial_edits(self) -> None:
-        name, central_diff, picker_diff = patch.PATCH_VARIANTS[0]
-        self.assertEqual(name, WINDOWS_26928_LAYOUT_NAME)
+        self.check_changed_hunk(WINDOWS_26928_LAYOUT_NAME)
+
+    def test_changed_26930_hunk_fails_closed_without_partial_edits(self) -> None:
+        self.check_changed_hunk(WINDOWS_26930_LAYOUT_NAME)
+
+    def check_changed_hunk(self, layout) -> None:
+        name, central_diff, picker_diff = next(
+            variant for variant in patch.PATCH_VARIANTS if variant[0] == layout
+        )
+        self.assertEqual(name, layout)
         with tempfile.TemporaryDirectory() as temporary:
             central = Path(temporary, "central.js")
             picker = Path(temporary, "picker.js")
@@ -83,13 +97,28 @@ class PatchSafetyTests(unittest.TestCase):
             self.assertEqual(picker.read_text(encoding="utf-8"), original_picker)
 
     def test_26928_check_discovers_and_patches_separate_app_server_bundle(self) -> None:
-        name, central_diff, picker_diff = patch.PATCH_VARIANTS[0]
-        self.assertEqual(name, WINDOWS_26928_LAYOUT_NAME)
+        self.check_separate_app_server_bundle(WINDOWS_26928_LAYOUT_NAME, APP_SERVER_ENV_MAPPINGS_ANCHOR_26928, "apply_process_model_catalog_override_26928")
+
+    def test_26930_check_discovers_and_patches_separate_app_server_bundle(self) -> None:
+        self.check_separate_app_server_bundle(WINDOWS_26930_LAYOUT_NAME, APP_SERVER_ENV_MAPPINGS_ANCHOR_26930, "apply_process_model_catalog_override_26930")
+
+    def test_changed_26930_server_anchor_preserves_source_and_config(self) -> None:
+        self.check_separate_app_server_bundle(WINDOWS_26930_LAYOUT_NAME, APP_SERVER_ENV_MAPPINGS_ANCHOR_26930, "apply_process_model_catalog_override_26930", broken_anchor=True)
+
+    def check_separate_app_server_bundle(self, layout, anchor, override_name, broken_anchor=False) -> None:
+        name, central_diff, picker_diff = next(
+            variant for variant in patch.PATCH_VARIANTS if variant[0] == layout
+        )
+        self.assertEqual(name, layout)
         with tempfile.TemporaryDirectory() as temporary:
             app = Path(temporary, "installed", "app")
             resources = app / "resources"
             resources.mkdir(parents=True)
             (resources / "app.asar").write_bytes(synthetic_asar({"files": {}}))
+
+            source_bytes = (resources / "app.asar").read_bytes()
+            config = Path(temporary, "existing-config.json")
+            config.write_bytes(b"existing config must remain untouched")
 
             def fake_run(command: list[str], **_kwargs: object) -> None:
                 if "extract" not in command:
@@ -110,11 +139,11 @@ class PatchSafetyTests(unittest.TestCase):
                 )
                 (web_assets / "unrelated.js").write_text("unrelated", encoding="utf-8")
                 (main_assets / "application-network-startup.js").write_text(
-                    APP_SERVER_ENV_MAPPINGS_ANCHOR_26928, encoding="utf-8"
+                    anchor.replace("chatgpt_base_url", "changed_base_url") if broken_anchor else anchor, encoding="utf-8"
                 )
                 (main_assets / "unrelated.js").write_text("unrelated", encoding="utf-8")
 
-            original_override = patch.apply_process_model_catalog_override_26928
+            original_override = getattr(patch, override_name)
             overridden_sources: list[str] = []
 
             def record_override(source: str) -> str:
@@ -129,18 +158,23 @@ class PatchSafetyTests(unittest.TestCase):
                  mock_patch.object(patch, "run", side_effect=fake_run), \
                  mock_patch.object(
                      patch,
-                     "apply_process_model_catalog_override_26928",
+                     override_name,
                      side_effect=record_override,
                  ) as override:
-                patch.patch_app(
-                    app,
-                    Path(temporary, "unused-config.json"),
-                    Path(temporary, "backups"),
-                    overwrite_config=False,
-                    check_only=True,
-                )
+                def check():
+                    patch.patch_app(app, config, Path(temporary, "backups"),
+                                    overwrite_config=False, check_only=True)
+                if broken_anchor:
+                    with self.assertRaises(patch.PatchError):
+                        check()
+                else:
+                    check()
+            self.assertEqual((resources / "app.asar").read_bytes(), source_bytes)
+            self.assertEqual(config.read_bytes(), b"existing config must remain untouched")
             override.assert_called_once()
-            self.assertIn(APP_SERVER_ENV_MAPPINGS_ANCHOR_26928, override.call_args.args[0])
+            if broken_anchor:
+                return
+            self.assertIn(anchor, override.call_args.args[0])
             self.assertIn("CODEX_CUSTOM_PROVIDER_MODEL_CATALOG", overridden_sources[0])
             self.assertIn("model_catalog_json", overridden_sources[0])
 
@@ -327,7 +361,8 @@ class PatchSafetyTests(unittest.TestCase):
 
             with mock_patch.object(patch, "find_target_app_processes", return_value=[]), \
                  mock_patch.object(patch, "source_codex_cli_version", return_value="fixture-cli"), \
-                 mock_patch.object(patch.shutil, "copytree", side_effect=inspect_copytree):
+                 mock_patch.object(patch.shutil, "copytree", side_effect=inspect_copytree), \
+                 mock_patch.object(patch.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "fixture shortcut", "")):
                 patch.install_portable(
                     source,
                     output,
@@ -367,7 +402,8 @@ class PatchSafetyTests(unittest.TestCase):
             with mock_patch.object(patch, "find_target_app_processes", return_value=[]), \
                  mock_patch.object(patch, "source_codex_cli_version", return_value="fixture-cli"), \
                  mock_patch.object(Path, "stat", different_volume_stat), \
-                 mock_patch.object(patch.shutil, "copy2", wraps=original_copy2) as copy2:
+                 mock_patch.object(patch.shutil, "copy2", wraps=original_copy2) as copy2, \
+                 mock_patch.object(patch.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "fixture shortcut", "")):
                 patch.install_portable(
                     source,
                     cross_volume_output,

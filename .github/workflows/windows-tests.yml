@@ -25,7 +25,7 @@ jobs:
         run: |
           $tokens = $null
           $errors = $null
-          foreach ($script in @('Register-Codex-PatchIdentity.ps1','Start-Codex-Provider.ps1')) {
+          foreach ($script in @('Register-Codex-PatchIdentity.ps1','Start-Codex-Provider.ps1','Register-Codex-DesktopShortcut.ps1')) {
             [void][System.Management.Automation.Language.Parser]::ParseFile(
               (Join-Path $PWD $script), [ref]$tokens, [ref]$errors)
             if ($errors.Count) { throw ($errors | Out-String) }

@@ -174,6 +174,28 @@ class WindowsLauncherTests(unittest.TestCase):
             self.assertEqual(by_slug["gpt-existing"]["display_name"], "Current metadata")
             self.assertEqual(by_slug["custom/model"]["display_name"], "Custom")
 
+    def test_repeated_inner_launch_refreshes_existing_runtime_catalog(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = LauncherFixture(Path(temporary))
+            first = fixture.run(check_only=False)
+            self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+            fixture.catalog.write_text(
+                json.dumps({"models": [{"slug": "replacement/model"}]}), encoding="utf-8"
+            )
+            second = fixture.run(check_only=False)
+            self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+            runtime = json.loads(fixture.runtime.read_text(encoding="utf-8"))
+            slugs = {model["slug"] for model in runtime["models"]}
+            self.assertEqual(slugs, {"gpt-existing", "gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol", "replacement/model"})
+            self.assertNotIn("custom/model", slugs)
+            self.assertEqual(list(fixture.runtime.parent.iterdir()), [fixture.runtime])
+            before = fixture.runtime.read_bytes()
+            fixture.catalog.write_text("invalid JSON", encoding="utf-8")
+            failed = fixture.run(check_only=True)
+            self.assertNotEqual(failed.returncode, 0)
+            self.assertEqual(fixture.runtime.read_bytes(), before)
+            self.assertEqual(list(fixture.runtime.parent.iterdir()), [fixture.runtime])
+
     def test_check_only_rejects_modified_portable_copy_before_writing(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             fixture = LauncherFixture(Path(temporary))
